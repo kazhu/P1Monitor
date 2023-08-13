@@ -39,11 +39,25 @@ public partial class DsmrReader : BackgroundService
 			{
 				using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
 				await socket.ConnectAsync(_options.Host, _options.Port, stoppingToken);
-				using var reader = new StreamReader(new NetworkStream(socket), Encoding.Latin1, false);
+				using var reader = new StreamReader(new NetworkStream(socket), Encoding.Latin1, detectEncodingFromByteOrderMarks: false);
 				State state = State.Starting;
-				for (string? line = await reader.ReadLineAsync(stoppingToken); line != null; line = reader.ReadLine())
+				for (string? line = await reader.ReadLineAsync(stoppingToken); line != null; line = await reader.ReadLineAsync(stoppingToken))
 				{
-					state = GetNextState(state, line);
+					switch (state)
+					{
+						case State.Starting:
+							state = Starting(line);
+							break;
+						case State.WaitingForIdent:
+							state = WaitingForIdent(line);
+							break;
+						case State.WaitingForData:
+							state = WaitingForData(line);
+							break;
+						case State.Data:
+							state = Data(line);
+							break;
+					}
 				}
 			}
 			catch (Exception ex) when (ex is not OperationCanceledException)
@@ -53,72 +67,83 @@ public partial class DsmrReader : BackgroundService
 		}
 	}
 
-	private State GetNextState(State state, string line)
+	private State Starting(string line)
 	{
-		switch (state)
+		if (GetIdentRegex().IsMatch(line))
 		{
-			case State.Starting:
-				if (GetIdentRegex().IsMatch(line)) goto case State.WaitingForIdent;
-				_logger.LogInformation("{Line} dropped, waiting for ident line", line);
-				return State.Starting;
-			case State.WaitingForIdent:
-				if (GetIdentRegex().IsMatch(line))
-				{
-					_crc.Reset();
-					_values.Clear();
-					_crc.UpdateWithLine(line);
-					return State.WaitingForData;
-				}
-				break;
-			case State.WaitingForData:
-				if (line == "")
-				{
-					_crc.UpdateWithLine(line);
-					return State.Data;
-				}
-				break;
-			case State.Data:
-				Match dataMatch = GetDataLineRegex().Match(line);
-				if (dataMatch.Success)
-				{
-					_crc.UpdateWithLine(line);
-					P1Value? value = GetValue(dataMatch);
-					if (value == null)
-					{
-						_logger.LogWarning("{Line} unknown id, line dropped", line);
-					}
-					else
-					{
-						if (!value.IsValid)
-						{
-							_logger.LogError("{Line} parsing of value failed", line);
-						}
-						else
-						{
-							_values.Add(value);
-						}
-					}
-					return State.Data;
-				}
+			return WaitingForIdent(line);
+		}
+		_logger.LogInformation("{Line} dropped, waiting for ident line", line);
+		return State.Starting;
+	}
 
-				Match crcMatch = GetCrcLineRegex().Match(line);
-				if (crcMatch.Success)
+	private State WaitingForIdent(string line)
+	{
+		if (GetIdentRegex().IsMatch(line))
+		{
+			_crc.Reset();
+			_values.Clear();
+			_crc.UpdateWithLine(line);
+			return State.WaitingForData;
+		}
+		_logger.LogError("{Line} dropped", line);
+		return State.WaitingForIdent;
+	}
+
+	private State WaitingForData(string line)
+	{
+		if (line == "")
+		{
+			_crc.UpdateWithLine(line);
+			return State.Data;
+		}
+		_logger.LogError("{Line} dropped", line);
+		return State.WaitingForIdent;
+	}
+
+	private State Data(string line)
+	{
+		Match dataMatch = GetDataLineRegex().Match(line);
+		if (dataMatch.Success)
+		{
+			_crc.UpdateWithLine(line);
+			P1Value? value = GetValue(dataMatch);
+			if (value == null)
+			{
+				_logger.LogWarning("{Line} unknown id, line dropped", line);
+			}
+			else
+			{
+				if (!value.IsValid)
 				{
-					_crc.Update('!');
-					if (crcMatch.Groups["crc"].Value == _crc.GetCrc())
-					{
-						_valuesQueue.Enqueue(_values.ToList());
-					}
-					else
-					{
-						_logger.LogError("{Line} crc is invalid", line);
-					}
-					return State.WaitingForIdent;
+					_logger.LogError("{Line} parsing of value failed", line);
 				}
-				break;
+				else
+				{
+					_values.Add(value);
+					_logger.LogDebug("{Value} parsed", value);
+				}
+			}
+			return State.Data;
 		}
 
-		_logger.LogWarning("{Line} dropped", line);
+		Match crcMatch = GetCrcLineRegex().Match(line);
+		if (crcMatch.Success)
+		{
+			_crc.Update('!');
+			if (crcMatch.Groups["crc"].Value == _crc.GetCrc())
+			{
+				_valuesQueue.Enqueue(_values.ToList());
+				_logger.LogDebug("Values enqueued");
+			}
+			else
+			{
+				_logger.LogError("{Line} crc is invalid", line);
+			}
+			return State.WaitingForIdent;
+		}
+
+		_logger.LogError("{Line} dropped", line);
 		return State.WaitingForIdent;
 	}
 

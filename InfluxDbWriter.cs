@@ -24,25 +24,22 @@ public class InfluxDbWriter : BackgroundService
 
 	protected override async Task ExecuteAsync(CancellationToken stoppingToken)
 	{
+		using var client = new HttpClient();
+		client.BaseAddress = new Uri(_options.BaseUrl);
+		client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Token", _options.Token);
+
 		while (true)
 		{
 			try
 			{
-				using var client = new HttpClient();
-				client.BaseAddress = new Uri(_options.BaseUrl);
-				client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Token", _options.Token);
-
-				while (true)
+				if (_valuesQueue.TryDequeue(out List<P1Value>? values) || values == null)
 				{
-					if (_valuesQueue.TryDequeue(out List<P1Value>? values) || values == null)
-					{
-						await Task.Delay(WaitTime, stoppingToken);
-						continue;
-					}
-
-					var response = await client.PostAsync($"api/v2/write?org={_options.Organization}&bucket={_options.Bucket}&precision=s", new StringContent(GenerateLine(values)), stoppingToken);
-					response.EnsureSuccessStatusCode();
+					await Task.Delay(WaitTime, stoppingToken);
+					continue;
 				}
+
+				var response = await client.PostAsync($"api/v2/write?org={_options.Organization}&bucket={_options.Bucket}&precision=s", new StringContent(GenerateLine(values)), stoppingToken);
+				response.EnsureSuccessStatusCode();
 			}
 			catch (Exception ex) when (ex is not OperationCanceledException)
 			{
