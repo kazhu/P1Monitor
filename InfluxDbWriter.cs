@@ -1,24 +1,22 @@
 ﻿using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using System.Collections.Concurrent;
 using System.Net.Http.Headers;
 using System.Text;
+using System.Threading.Channels;
 
 namespace P1Monitor;
 
 public class InfluxDbWriter : BackgroundService
 {
-	private static readonly TimeSpan WaitTime = TimeSpan.FromSeconds(1);
-
 	private readonly ILogger<InfluxDbWriter> _logger;
-	private readonly ConcurrentQueue<List<P1Value>> _valuesQueue;
+	private readonly ChannelReader<List<P1Value>> _valuesReader;
 	private readonly InfluxDbOptions _options;
 
-	public InfluxDbWriter(ILogger<InfluxDbWriter> logger, ConcurrentQueue<List<P1Value>> valuesQueue, IOptions<InfluxDbOptions> options)
+	public InfluxDbWriter(ILogger<InfluxDbWriter> logger, ChannelReader<List<P1Value>> valuesReader, IOptions<InfluxDbOptions> options)
 	{
 		_logger = logger;
-		_valuesQueue = valuesQueue;
+		_valuesReader = valuesReader;
 		_options = options.Value;
 	}
 
@@ -27,19 +25,19 @@ public class InfluxDbWriter : BackgroundService
 		using var client = new HttpClient();
 		client.BaseAddress = new Uri(_options.BaseUrl);
 		client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Token", _options.Token);
+		string requestUri = $"api/v2/write?org={_options.Organization}&bucket={_options.Bucket}&precision=s";
 
 		while (true)
 		{
 			try
 			{
-				if (_valuesQueue.TryDequeue(out List<P1Value>? values) || values == null)
+				List<P1Value> values = await _valuesReader.ReadAsync(stoppingToken);
+				string content = GenerateLines(values);
+				HttpResponseMessage response = await client.PostAsync(requestUri, new StringContent(content), stoppingToken);
+				if (!response.IsSuccessStatusCode)
 				{
-					await Task.Delay(WaitTime, stoppingToken);
-					continue;
+					_logger.LogError("Error writing to InfluxDB: {StatusCode} {ReasonPhrase} {message}", response.StatusCode, response.ReasonPhrase, await response.Content.ReadAsStringAsync());
 				}
-
-				var response = await client.PostAsync($"api/v2/write?org={_options.Organization}&bucket={_options.Bucket}&precision=s", new StringContent(GenerateLine(values)), stoppingToken);
-				response.EnsureSuccessStatusCode();
 			}
 			catch (Exception ex) when (ex is not OperationCanceledException)
 			{
@@ -48,40 +46,52 @@ public class InfluxDbWriter : BackgroundService
 		}
 	}
 
-	private static string GenerateLine(List<P1Value> values)
+	private static string GenerateLines(List<P1Value> values)
 	{
-		var builder = new StringBuilder();
-		builder.Append("p1value");
-		foreach (var tagValue in values.OfType<P1StringValue>().OrderBy(x => x.FieldName))
-		{
-			builder
-				.Append(',')
-				.Append(tagValue.FieldName)
-				.Append('=')
-				.Append(tagValue.Value);
-		}
-		builder.Append(' ');
-		bool isFirst = true;
-		foreach (var tagValue in values.OfType<P1NumberValue>())
-		{
-			if (isFirst)
-			{
-				isFirst = false;
-			}
-			else
-			{
-				builder.Append(',');
-			}
-			builder
-				.Append(tagValue.FieldName)
-				.Append('=')
-				.Append(tagValue.Value);
-		}
-
 		var timeValue = values.OfType<P1TimeValue>().Single(x => x.FieldName == "time");
-		builder
-			.Append(' ')
-			.Append(timeValue.Value.ToUnixTimeSeconds());
+		var builder = new StringBuilder();
+		foreach (var group in values.OfType<P1NumberValue>().GroupBy(x => x.Unit))
+		{
+			builder.Append("p1value");
+			foreach (var tagValue in values.OfType<P1StringValue>().OrderBy(x => x.FieldName))
+			{
+				builder
+					.Append(',')
+					.Append(tagValue.FieldName)
+					.Append('=')
+					.Append(tagValue.Value);
+			}
+			if (group.Key != P1Unit.None)
+			{
+				builder
+					.Append(",unit=")
+					.Append(group.Key)
+					.Append(' ');
+			}
+			builder.Append(' ');
+
+			bool isFirst = true;
+			foreach (P1NumberValue tagValue in group.OrderBy(x => x.FieldName))
+			{
+				if (isFirst)
+				{
+					isFirst = false;
+				}
+				else
+				{
+					builder.Append(',');
+				}
+				builder
+					.Append(tagValue.FieldName)
+					.Append('=')
+					.Append(tagValue.Value);
+			}
+
+			builder
+				.Append(' ')
+				.Append(timeValue.Value.ToUnixTimeSeconds())
+				.Append('\n');
+		}
 		return builder.ToString();
 	}
 }

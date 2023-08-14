@@ -1,8 +1,8 @@
 ﻿namespace P1Monitor;
 
-internal struct ModbusCrc
+public class ModbusCrc
 {
-	ushort value;
+	private ushort _value;
 
 	public void UpdateWithLine(string line)
 	{
@@ -22,13 +22,13 @@ internal struct ModbusCrc
 
 	public void Update(byte data)
 	{
-		int index = (byte)value ^ data;
-		value = (ushort)((value >> 8) ^ CrcLookupTable[index]);
+		int index = (byte)_value ^ data;
+		_value = (ushort)((_value >> 8) ^ CrcLookupTable[index]);
 	}
 
-	public void Reset() => value = 0;
+	public void Reset() => _value = 0;
 
-	public string GetCrc() => value.ToString("X4");
+	public string GetCrc() => _value.ToString("X4");
 
 	private static readonly UInt16[] CrcLookupTable = new UInt16[]
 	{

@@ -1,20 +1,72 @@
 ﻿using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using System.Collections.Concurrent;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading.Channels;
 
 namespace P1Monitor;
 
 public partial class DsmrReader : BackgroundService
 {
 	private readonly ILogger<DsmrReader> _logger;
-	private readonly ConcurrentQueue<List<P1Value>> _valuesQueue;
+	private readonly ChannelWriter<List<P1Value>> _valuesWriter;
 	private readonly DsmrReaderOptions _options;
 	private readonly List<P1Value> _values = new();
 	private readonly ModbusCrc _crc = new();
+
+	private static readonly ObisMapping[] ObisMappings = new[]
+	{
+		P1TimeValue.GetMapping("0-0:1.0.0", "time"),
+		P1StringValue.GetMapping("0-0:42.0.0", "name"),
+		P1StringValue.GetMapping("0-0:96.1.0", "serial"),
+		P1NumberValue.GetMapping("0-0:96.14.0", "tariff"),
+		P1OnOffValue.GetMapping("0-0:96.50.68", "state"),
+		P1NumberValue.GetMapping("1-0:1.8.0", "import_energy"),
+		P1NumberValue.GetMapping("1-0:1.8.1", "import_energy_tariff_1"),
+		P1NumberValue.GetMapping("1-0:1.8.2", "import_energy_tariff_2"),
+		P1NumberValue.GetMapping("1-0:1.8.3", "import_energy_tariff_3"),
+		P1NumberValue.GetMapping("1-0:1.8.4", "import_energy_tariff_4"),
+		P1NumberValue.GetMapping("1-0:2.8.0", "export_energy"),
+		P1NumberValue.GetMapping("1-0:2.8.1", "export_energy_tariff_1"),
+		P1NumberValue.GetMapping("1-0:2.8.2", "export_energy_tariff_2"),
+		P1NumberValue.GetMapping("1-0:2.8.3", "export_energy_tariff_3"),
+		P1NumberValue.GetMapping("1-0:2.8.4", "export_energy_tariff_4"),
+		P1NumberValue.GetMapping("1-0:3.8.0", "import_reactive_energy"),
+		P1NumberValue.GetMapping("1-0:4.8.0", "export_reactive_energy"),
+		P1NumberValue.GetMapping("1-0:5.8.0", "reactive_energy_q1"),
+		P1NumberValue.GetMapping("1-0:6.8.0", "reactive_energy_q2"),
+		P1NumberValue.GetMapping("1-0:7.8.0", "reactive_energy_q3"),
+		P1NumberValue.GetMapping("1-0:8.8.0", "reactive_energy_q4"),
+		P1NumberValue.GetMapping("1-0:32.7.0", "voltage_l1"),
+		P1NumberValue.GetMapping("1-0:52.7.0", "voltage_l2"),
+		P1NumberValue.GetMapping("1-0:72.7.0", "voltage_l3"),
+		P1NumberValue.GetMapping("1-0:31.7.0", "current_l1"),
+		P1NumberValue.GetMapping("1-0:51.7.0", "current_l2"),
+		P1NumberValue.GetMapping("1-0:71.7.0", "current_l3"),
+		P1NumberValue.GetMapping("1-0:13.7.0", "power_factor"),
+		P1NumberValue.GetMapping("1-0:33.7.0", "power_factor_l1"),
+		P1NumberValue.GetMapping("1-0:53.7.0", "power_factor_l2"),
+		P1NumberValue.GetMapping("1-0:73.7.0", "power_factor_l3"),
+		P1NumberValue.GetMapping("1-0:14.7.0", "frequency"),
+		P1NumberValue.GetMapping("1-0:1.7.0", "import_power"),
+		P1NumberValue.GetMapping("1-0:2.7.0", "export_power"),
+		P1NumberValue.GetMapping("1-0:5.7.0", "reactive_power_q1"),
+		P1NumberValue.GetMapping("1-0:6.7.0", "reactive_power_q2"),
+		P1NumberValue.GetMapping("1-0:7.7.0", "reactive_power_q3"),
+		P1NumberValue.GetMapping("1-0:8.7.0", "reactive_power_q4"),
+		P1NoValue.GetMapping("0-0:17.0.0", "limiter_limit"), 
+		P1NoValue.GetMapping("1-0:15.8.0", "energy_combined"),
+		P1NoValue.GetMapping("1-0:31.4.0", "current_limit_l1"),
+		P1NoValue.GetMapping("1-0:51.4.0", "current_limit_l2"),
+		P1NoValue.GetMapping("1-0:71.4.0", "current_limit_l3"),
+		P1NoValue.GetMapping("0-0:98.1.0", "previous_month"), 
+		P1NoValue.GetMapping("0-0:96.13.0", "message") 
+	};
+
+	private static readonly Dictionary<string, ObisMapping> ObisMappingsById = ObisMappings.ToDictionary(m => m.Id);
+
 
 	private enum State
 	{
@@ -24,10 +76,10 @@ public partial class DsmrReader : BackgroundService
 		Data,
 	}
 
-	public DsmrReader(ILogger<DsmrReader> logger, ConcurrentQueue<List<P1Value>> valuesQueue, IOptions<DsmrReaderOptions> options)
+	public DsmrReader(ILogger<DsmrReader> logger, ChannelWriter<List<P1Value>> valuesWriter, IOptions<DsmrReaderOptions> options)
 	{
 		_logger = logger;
-		_valuesQueue = valuesQueue;
+		_valuesWriter = valuesWriter;
 		_options = options.Value;
 	}
 
@@ -55,7 +107,7 @@ public partial class DsmrReader : BackgroundService
 							state = WaitingForData(line);
 							break;
 						case State.Data:
-							state = Data(line);
+							state = await Data(line, stoppingToken);
 							break;
 					}
 				}
@@ -81,8 +133,8 @@ public partial class DsmrReader : BackgroundService
 	{
 		if (GetIdentRegex().IsMatch(line))
 		{
-			_crc.Reset();
 			_values.Clear();
+			_crc.Reset();
 			_crc.UpdateWithLine(line);
 			return State.WaitingForData;
 		}
@@ -101,107 +153,61 @@ public partial class DsmrReader : BackgroundService
 		return State.WaitingForIdent;
 	}
 
-	private State Data(string line)
+	private async ValueTask<State> Data(string line, CancellationToken stoppingToken)
 	{
 		Match dataMatch = GetDataLineRegex().Match(line);
 		if (dataMatch.Success)
 		{
-			_crc.UpdateWithLine(line);
-			P1Value? value = GetValue(dataMatch);
-			if (value == null)
-			{
-				_logger.LogWarning("{Line} unknown id, line dropped", line);
-			}
-			else
-			{
-				if (!value.IsValid)
-				{
-					_logger.LogError("{Line} parsing of value failed", line);
-				}
-				else
-				{
-					_values.Add(value);
-					_logger.LogDebug("{Value} parsed", value);
-				}
-			}
-			return State.Data;
+			return ProcessData(line, dataMatch);
 		}
 
 		Match crcMatch = GetCrcLineRegex().Match(line);
 		if (crcMatch.Success)
 		{
-			_crc.Update('!');
-			if (crcMatch.Groups["crc"].Value == _crc.GetCrc())
-			{
-				_valuesQueue.Enqueue(_values.ToList());
-				_logger.LogDebug("Values enqueued");
-			}
-			else
-			{
-				_logger.LogError("{Line} crc is invalid", line);
-			}
-			return State.WaitingForIdent;
+			return await ProcessCrc(line, crcMatch, stoppingToken);
 		}
 
 		_logger.LogError("{Line} dropped", line);
 		return State.WaitingForIdent;
 	}
 
-	private static P1Value? GetValue(Match match)
+	private State ProcessData(string line, Match dataMatch)
 	{
-		string id = match.Groups["id"].Value;
-		string data = match.Groups["data"].Value;
-		switch (id)
+		_crc.UpdateWithLine(line);
+		string id = dataMatch.Groups["id"].Value;
+		if (ObisMappingsById.TryGetValue(id, out ObisMapping? mapping) && mapping != null)
 		{
-			case "0-0:1.0.0": return new P1TimeValue(id, data, "time");
-			case "0-0:42.0.0": return new P1StringValue(id, data, "name");
-			case "0-0:96.1.0": return new P1StringValue(id, data, "serial");
-			case "0-0:96.14.0": return new P1Number4Value(id, data, "tariff");
-			case "0-0:96.50.68": return new P1OnOffValue(id, data, "state");
-			case "1-0:1.8.0": return new P1kWhValue(id, data, "import_energy");
-			case "1-0:1.8.1": return new P1kWhValue(id, data, "import_energy_tariff_1");
-			case "1-0:1.8.2": return new P1kWhValue(id, data, "import_energy_tariff_2");
-			case "1-0:1.8.3": return new P1kWhValue(id, data, "import_energy_tariff_3");
-			case "1-0:1.8.4": return new P1kWhValue(id, data, "import_energy_tariff_4");
-			case "1-0:2.8.0": return new P1kWhValue(id, data, "export_energy");
-			case "1-0:2.8.1": return new P1kWhValue(id, data, "export_energy_tariff_1");
-			case "1-0:2.8.2": return new P1kWhValue(id, data, "export_energy_tariff_2");
-			case "1-0:2.8.3": return new P1kWhValue(id, data, "export_energy_tariff_3");
-			case "1-0:2.8.4": return new P1kWhValue(id, data, "export_energy_tariff_4");
-			case "1-0:3.8.0": return new P1kvarhValue(id, data, "import_reactive_energy");
-			case "1-0:4.8.0": return new P1kvarhValue(id, data, "export_reactive_energy");
-			case "1-0:5.8.0": return new P1kvarhValue(id, data, "reactive_energy_q1");
-			case "1-0:6.8.0": return new P1kvarhValue(id, data, "reactive_energy_q2");
-			case "1-0:7.8.0": return new P1kvarhValue(id, data, "reactive_energy_q3");
-			case "1-0:8.8.0": return new P1kvarhValue(id, data, "reactive_energy_q4");
-			case "1-0:32.7.0": return new P1VoltValue(id, data, "voltage_l1");
-			case "1-0:52.7.0": return new P1VoltValue(id, data, "voltage_l2");
-			case "1-0:72.7.0": return new P1VoltValue(id, data, "voltage_l3");
-			case "1-0:31.7.0": return new P1AmpereValue(id, data, "current_l1");
-			case "1-0:51.7.0": return new P1AmpereValue(id, data, "current_l2");
-			case "1-0:71.7.0": return new P1AmpereValue(id, data, "current_l3");
-			case "1-0:13.7.0": return new P1PowerFactorValue(id, data, "power_factor");
-			case "1-0:33.7.0": return new P1PowerFactorValue(id, data, "power_factor_l1");
-			case "1-0:53.7.0": return new P1PowerFactorValue(id, data, "power_factor_l2");
-			case "1-0:73.7.0": return new P1PowerFactorValue(id, data, "power_factor_l3");
-			case "1-0:14.7.0": return new P1HzValue(id, data, "frequency");
-			case "1-0:1.7.0": return new P1kWValue(id, data, "import_power");
-			case "1-0:2.7.0": return new P1kWValue(id, data, "export_power");
-			case "1-0:5.7.0": return new P1kvarValue(id, data, "reactive_power_q1");
-			case "1-0:6.7.0": return new P1kvarValue(id, data, "reactive_power_q2");
-			case "1-0:7.7.0": return new P1kvarValue(id, data, "reactive_power_q3");
-			case "1-0:8.7.0": return new P1kvarValue(id, data, "reactive_power_q4");
-			case "0-0:17.0.0": // Limiter határérték
-			case "1-0:15.8.0": // Hatásos energia kombinált
-			case "1-0:31.4.0": // Áram korlátozás határérték 1
-			case "1-0:51.4.0": // Áram korlátozás határérték 2
-			case "1-0:71.4.0": // Áram korlátozás határérték 3
-			case "0-0:98.1.0": // Hónap végi tárolt adatok
-			case "0-0:96.13.0": // Áramszolgáltatói szöveges üzenet
-				return new P1NoValue(id, data);
-			default:
-				return null;
+			P1Value value = mapping.CreateValue(dataMatch.Groups["data"].Value);
+			if (value.IsValid)
+			{
+				_values.Add(value);
+				_logger.LogDebug("{Value} parsed", value);
+			}
+			else
+			{
+				_logger.LogError("{Line} parsing of value failed", line);
+			}
 		}
+		else
+		{
+			_logger.LogWarning("{Line} unknown obis id, line dropped", line);
+		}
+		return State.Data;
+	}
+
+	private async ValueTask<State> ProcessCrc(string line, Match crcMatch, CancellationToken stoppingToken)
+	{
+		_crc.Update('!');
+		if (crcMatch.Groups["crc"].Value == _crc.GetCrc())
+		{
+			await _valuesWriter.WriteAsync(_values.ToList(), stoppingToken);
+			_logger.LogDebug("Values enqueued");
+		}
+		else
+		{
+			_logger.LogError("{Line} crc is invalid", line);
+		}
+		return State.WaitingForIdent;
 	}
 
 	[GeneratedRegex(@"^/...5\d+\z")]
