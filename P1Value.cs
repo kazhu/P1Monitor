@@ -49,18 +49,35 @@ public static class P1UnitExtensions
 	};
 }
 
-public partial record class P1NumberValue(string FieldName, string Id, string TextValue) : P1Value(FieldName, Id)
+public partial record class P1NumberValue(string FieldName, string Id, string TextValue, P1Unit Unit) : P1Value(FieldName, Id)
 {
-	public static ObisMapping GetMapping(string id, string fieldName) => new ObisMapping(id, fieldName, (value) => new P1NumberValue(fieldName, id, value));
+	public static ObisMapping GetMapping(string id, string fieldName, P1Unit expectedUnit) => new ObisMapping(id, fieldName, (value) => new P1NumberValue(fieldName, id, value, expectedUnit));
 
 	public decimal Value => decimal.Parse(ParseRegex().Match(TextValue).Groups["number"].Value);
 
-	public P1Unit Unit => ParseRegex().Match(TextValue).Groups["unit"].Value.ToP1Unit();
-
 	public override bool IsValid => ParseRegex().IsMatch(TextValue);
 
-	[GeneratedRegex(@"^(?<number>\d{1,15}(?:\.\d{1,9})?)(?<unit>\*kWh|\*kvarh|\*kW|\*kvar|\*Hz|\*V|\*A|)\z")]
-	private static partial Regex ParseRegex();
+	private Regex ParseRegex() => Unit switch
+	{
+		P1Unit.kWh => ParseRegex_kWh(),
+		P1Unit.kvarh => ParseRegex_kvarh(),
+		P1Unit.kW => ParseRegex_kW(),
+		P1Unit.kvar => ParseRegex_kvar(),
+		P1Unit.Hz => ParseRegex_Hz(),
+		P1Unit.V => ParseRegex_V(),
+		P1Unit.A => ParseRegex_A(),
+		P1Unit.None => ParseRegex_None(),
+		_ => throw new ArgumentException($"Unknown unit {Unit}", nameof(Unit)),
+	};
+
+	[GeneratedRegex(@"^(?<number>\d{1,15}(?:\.\d{1,9})?)\*kWh\z")] private static partial Regex ParseRegex_kWh();
+	[GeneratedRegex(@"^(?<number>\d{1,15}(?:\.\d{1,9})?)\*kvarh\z")] private static partial Regex ParseRegex_kvarh();
+	[GeneratedRegex(@"^(?<number>\d{1,15}(?:\.\d{1,9})?)\*kW\z")] private static partial Regex ParseRegex_kW();
+	[GeneratedRegex(@"^(?<number>\d{1,15}(?:\.\d{1,9})?)\*kvar\z")] private static partial Regex ParseRegex_kvar();
+	[GeneratedRegex(@"^(?<number>\d{1,15}(?:\.\d{1,9})?)\*Hz\z")] private static partial Regex ParseRegex_Hz();
+	[GeneratedRegex(@"^(?<number>\d{1,15}(?:\.\d{1,9})?)\*V\z")] private static partial Regex ParseRegex_V();
+	[GeneratedRegex(@"^(?<number>\d{1,15}(?:\.\d{1,9})?)\*A\z")] private static partial Regex ParseRegex_A();
+	[GeneratedRegex(@"^(?<number>\d{1,15}(?:\.\d{1,9})?)\z")] private static partial Regex ParseRegex_None();
 }
 
 public partial record class P1TimeValue(string FieldName, string Id, string TextValue) : P1Value(FieldName, Id)
@@ -83,7 +100,7 @@ public partial record class P1TimeValue(string FieldName, string Id, string Text
 
 public partial record class P1OnOffValue(string FieldName, string Id, string TextValue) : P1StringValue(FieldName, Id, TextValue)
 {
-	public static ObisMapping GetMapping(string id, string fieldName) => new ObisMapping(id, fieldName, (value) => new P1OnOffValue(fieldName, id, value));
+	public static new ObisMapping GetMapping(string id, string fieldName) => new ObisMapping(id, fieldName, (value) => new P1OnOffValue(fieldName, id, value));
 
 	public override bool IsValid => ValidatorRegex().IsMatch(TextValue);
 

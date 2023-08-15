@@ -1,0 +1,19 @@
+#!/bin/sh
+
+case "$1" in
+  configure)
+    if ! getent passwd p1monitor > /dev/null; then
+        adduser --quiet \
+                --system \
+                --group \
+                --no-create-home \
+                --disabled-password \
+                --home / \
+                p1monitor
+    fi
+  ;;
+esac
+
+systemctl daemon-reload
+systemctl enable p1monitor.service
+systemctl start p1monitor.service

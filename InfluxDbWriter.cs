@@ -38,6 +38,10 @@ public class InfluxDbWriter : BackgroundService
 				{
 					_logger.LogError("Error writing to InfluxDB: {StatusCode} {ReasonPhrase} {message}", response.StatusCode, response.ReasonPhrase, await response.Content.ReadAsStringAsync());
 				}
+				else
+				{
+					_logger.LogDebug("Wrote {Count} values to InfluxDB", values.Count);
+				}
 			}
 			catch (Exception ex) when (ex is not OperationCanceledException)
 			{

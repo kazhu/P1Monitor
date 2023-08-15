@@ -1,0 +1,6 @@
+Package: p1monitor
+Version: 1.0
+Maintainer: Attila Zoltan Kovacs
+Architecture: all
+Depends: systemd
+Description: P1Monitor is reading data from a P1 port via esp-link remotely and ingesting into InfluxDB
