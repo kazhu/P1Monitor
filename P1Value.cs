@@ -2,23 +2,13 @@
 
 namespace P1Monitor;
 
-public abstract record class P1Value(string FieldName, string Id)
+public enum P1Type
 {
-	public abstract bool IsValid { get; }
-}
-
-public partial record class P1NoValue(string FieldName, string Id, string Value) : P1Value(FieldName, Id)
-{
-	public static ObisMapping GetMapping(string id, string fieldName) => new ObisMapping(id, fieldName, (value) => new P1NoValue(fieldName, id, value));
-
-	public override bool IsValid => true;
-}
-
-public record class P1StringValue(string FieldName, string Id, string Value) : P1Value(FieldName, Id)
-{
-	public static ObisMapping GetMapping(string id, string fieldName) => new ObisMapping(id, fieldName, (value) => new P1StringValue(fieldName, id, value));
-
-	override public bool IsValid => true;
+	NotNeeded,
+	String,
+	Number,
+	Time,
+	OnOff,
 }
 
 public enum P1Unit
@@ -33,80 +23,68 @@ public enum P1Unit
 	A,
 }
 
-public static class P1UnitExtensions
+public partial record struct P1Value(string FieldName, string Id, string Data, P1Type P1Type, bool IsValid = true, P1Unit Unit = P1Unit.None, DateTimeOffset? Time = null)
 {
-	public static P1Unit ToP1Unit(this string text) => text switch
+	public static ObisMapping GetNotNeededMapping(string id, string fieldName) => 
+		new ObisMapping(id, fieldName, (value) => new P1Value(fieldName, id, value, P1Type.NotNeeded));
+	public static ObisMapping GetStringMapping(string id, string fieldName) => 
+		new ObisMapping(id, fieldName, (value) => new P1Value(fieldName, id, value, P1Type.String));
+	public static ObisMapping GetOnOffMapping(string id, string fieldName) =>
+		new ObisMapping(id, fieldName, (value) => new P1Value(fieldName, id, value, P1Type.OnOff, value == "ON" || value == "OFF"));
+	public static ObisMapping GetNumberMapping(string id, string fieldName, P1Unit unit)
 	{
-		"*kWh" => P1Unit.kWh,
-		"*kvarh" => P1Unit.kvarh,
-		"*kW" => P1Unit.kW,
-		"*kvar" => P1Unit.kvar,
-		"*Hz" => P1Unit.Hz,
-		"*V" => P1Unit.V,
-		"*A" => P1Unit.A,
-		"" => P1Unit.None,
-		_ => throw new ArgumentException($"Unknown unit {text}", nameof(text)),
-	};
-}
-
-public partial record class P1NumberValue(string FieldName, string Id, string TextValue, P1Unit Unit) : P1Value(FieldName, Id)
-{
-	public static ObisMapping GetMapping(string id, string fieldName, P1Unit expectedUnit) => new ObisMapping(id, fieldName, (value) => new P1NumberValue(fieldName, id, value, expectedUnit));
-
-	public decimal Value => decimal.Parse(ParseRegex().Match(TextValue).Groups["number"].Value);
-
-	public override bool IsValid => ParseRegex().IsMatch(TextValue);
-
-	private Regex ParseRegex() => Unit switch
+		return new ObisMapping(id, fieldName, (value) =>
+		{
+			Match match = ParseNumberRegex().Match(value);
+			string expectedUnit = unit switch
+			{
+				P1Unit.kWh => "*kWh",
+				P1Unit.kvarh => "*kvarh",
+				P1Unit.kW => "*kW",
+				P1Unit.kvar => "*kvar",
+				P1Unit.Hz => "*Hz",
+				P1Unit.V => "*V",
+				P1Unit.A => "*A",
+				P1Unit.None => "",
+				_ => throw new ArgumentException($"Unknown unit {unit}", nameof(unit)),
+			};
+			bool isValid = match.Success && match.Groups["unit"].Value == expectedUnit;
+			return new P1Value(fieldName, id, isValid ? match.Groups["number"].Value : value, P1Type.Number, isValid, Unit: unit);
+		});
+	}
+	public static ObisMapping GetTimeMapping(string id, string fieldName)
 	{
-		P1Unit.kWh => ParseRegex_kWh(),
-		P1Unit.kvarh => ParseRegex_kvarh(),
-		P1Unit.kW => ParseRegex_kW(),
-		P1Unit.kvar => ParseRegex_kvar(),
-		P1Unit.Hz => ParseRegex_Hz(),
-		P1Unit.V => ParseRegex_V(),
-		P1Unit.A => ParseRegex_A(),
-		P1Unit.None => ParseRegex_None(),
-		_ => throw new ArgumentException($"Unknown unit {Unit}", nameof(Unit)),
-	};
+		return new ObisMapping(id, fieldName, (value) =>
+		{
+			bool isValid = value.Length == 13 && value[12] == 'S';
+			for (int i = 0; isValid && i < 12; i++) isValid = char.IsDigit(value[i]);
+			DateTimeOffset? time = null;
+			if (isValid)
+			{
+				int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
+				isValid =
+					int.TryParse(value.Substring(0, 2), out year) && year >= 0 && year <= 99 &&
+					int.TryParse(value.Substring(2, 2), out month) && month >= 1 && month <= 12 &&
+					int.TryParse(value.Substring(4, 2), out day) && day >= 1 && day <= 31 &&
+					int.TryParse(value.Substring(6, 2), out hour) && hour >= 0 && hour <= 23 &&
+					int.TryParse(value.Substring(8, 2), out minute) && minute >= 0 && minute <= 59 &&
+					int.TryParse(value.Substring(10, 2), out second) && second >= 0 && second <= 59;
+				if (isValid)
+				{
+					try
+					{
+						time = new DateTimeOffset(2000 + year, month, day, hour, minute, second, DateTimeOffset.Now.Offset);
+					}
+					catch (ArgumentException)
+					{
+						isValid = false;
+					}
+				}
+			}
+			return new P1Value(fieldName, id, value, P1Type.Time, isValid, Time: time);
+		});
+	}
 
-	[GeneratedRegex(@"^(?<number>\d{1,15}(?:\.\d{1,9})?)\*kWh\z")] private static partial Regex ParseRegex_kWh();
-	[GeneratedRegex(@"^(?<number>\d{1,15}(?:\.\d{1,9})?)\*kvarh\z")] private static partial Regex ParseRegex_kvarh();
-	[GeneratedRegex(@"^(?<number>\d{1,15}(?:\.\d{1,9})?)\*kW\z")] private static partial Regex ParseRegex_kW();
-	[GeneratedRegex(@"^(?<number>\d{1,15}(?:\.\d{1,9})?)\*kvar\z")] private static partial Regex ParseRegex_kvar();
-	[GeneratedRegex(@"^(?<number>\d{1,15}(?:\.\d{1,9})?)\*Hz\z")] private static partial Regex ParseRegex_Hz();
-	[GeneratedRegex(@"^(?<number>\d{1,15}(?:\.\d{1,9})?)\*V\z")] private static partial Regex ParseRegex_V();
-	[GeneratedRegex(@"^(?<number>\d{1,15}(?:\.\d{1,9})?)\*A\z")] private static partial Regex ParseRegex_A();
-	[GeneratedRegex(@"^(?<number>\d{1,15}(?:\.\d{1,9})?)\z")] private static partial Regex ParseRegex_None();
+	[GeneratedRegex(@"^(?<number>\d{1,15}(?:\.\d{1,9})?)(?<unit>|\*.+)\z")]
+	private static partial Regex ParseNumberRegex();
 }
-
-public partial record class P1TimeValue(string FieldName, string Id, string TextValue) : P1Value(FieldName, Id)
-{
-	public static ObisMapping GetMapping(string id, string fieldName) => new ObisMapping(id, fieldName, (value) => new P1TimeValue(fieldName, id, value));
-
-	public DateTimeOffset Value => new DateTimeOffset(
-		2000 + int.Parse(TextValue.Substring(0, 2)), 
-		int.Parse(TextValue.Substring(2, 2)), 
-		int.Parse(TextValue.Substring(4, 2)), 
-		int.Parse(TextValue.Substring(6, 2)), 
-		int.Parse(TextValue.Substring(8, 2)), 
-		int.Parse(TextValue.Substring(10, 2)), 
-		DateTimeOffset.Now.Offset);
-	public override bool IsValid => ValidatorRegex().IsMatch(TextValue);
-
-	[GeneratedRegex(@"^\d{12}S\z")]
-	private static partial Regex ValidatorRegex();
-}
-
-public partial record class P1OnOffValue(string FieldName, string Id, string TextValue) : P1StringValue(FieldName, Id, TextValue)
-{
-	public static new ObisMapping GetMapping(string id, string fieldName) => new ObisMapping(id, fieldName, (value) => new P1OnOffValue(fieldName, id, value));
-
-	public override bool IsValid => ValidatorRegex().IsMatch(TextValue);
-
-	public bool IsOn => TextValue == "ON";
-
-	[GeneratedRegex(@"^(?:ON|OFF)\z")]
-	private static partial Regex ValidatorRegex();
-}
-

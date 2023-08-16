@@ -10,63 +10,62 @@ namespace P1Monitor;
 
 public partial class DsmrReader : BackgroundService
 {
+	private static readonly Dictionary<string, ObisMapping> ObisMappingsById =
+		new[]
+		{
+			P1Value.GetTimeMapping("0-0:1.0.0", "time"),
+			P1Value.GetStringMapping("0-0:42.0.0", "name"),
+			P1Value.GetStringMapping("0-0:96.1.0", "serial"),
+			P1Value.GetNumberMapping("0-0:96.14.0", "tariff", P1Unit.None),
+			P1Value.GetOnOffMapping("0-0:96.50.68", "state"),
+			P1Value.GetNumberMapping("1-0:1.8.0", "import_energy", P1Unit.kWh),
+			P1Value.GetNumberMapping("1-0:1.8.1", "import_energy_tariff_1", P1Unit.kWh),
+			P1Value.GetNumberMapping("1-0:1.8.2", "import_energy_tariff_2", P1Unit.kWh),
+			P1Value.GetNumberMapping("1-0:1.8.3", "import_energy_tariff_3", P1Unit.kWh),
+			P1Value.GetNumberMapping("1-0:1.8.4", "import_energy_tariff_4", P1Unit.kWh),
+			P1Value.GetNumberMapping("1-0:2.8.0", "export_energy", P1Unit.kWh),
+			P1Value.GetNumberMapping("1-0:2.8.1", "export_energy_tariff_1", P1Unit.kWh),
+			P1Value.GetNumberMapping("1-0:2.8.2", "export_energy_tariff_2", P1Unit.kWh),
+			P1Value.GetNumberMapping("1-0:2.8.3", "export_energy_tariff_3", P1Unit.kWh),
+			P1Value.GetNumberMapping("1-0:2.8.4", "export_energy_tariff_4", P1Unit.kWh),
+			P1Value.GetNumberMapping("1-0:3.8.0", "import_reactive_energy", P1Unit.kvarh),
+			P1Value.GetNumberMapping("1-0:4.8.0", "export_reactive_energy", P1Unit.kvarh),
+			P1Value.GetNumberMapping("1-0:5.8.0", "reactive_energy_q1", P1Unit.kvarh),
+			P1Value.GetNumberMapping("1-0:6.8.0", "reactive_energy_q2", P1Unit.kvarh),
+			P1Value.GetNumberMapping("1-0:7.8.0", "reactive_energy_q3", P1Unit.kvarh),
+			P1Value.GetNumberMapping("1-0:8.8.0", "reactive_energy_q4", P1Unit.kvarh),
+			P1Value.GetNumberMapping("1-0:32.7.0", "voltage_l1", P1Unit.V),
+			P1Value.GetNumberMapping("1-0:52.7.0", "voltage_l2", P1Unit.V),
+			P1Value.GetNumberMapping("1-0:72.7.0", "voltage_l3", P1Unit.V),
+			P1Value.GetNumberMapping("1-0:31.7.0", "current_l1", P1Unit.A),
+			P1Value.GetNumberMapping("1-0:51.7.0", "current_l2", P1Unit.A),
+			P1Value.GetNumberMapping("1-0:71.7.0", "current_l3", P1Unit.A),
+			P1Value.GetNumberMapping("1-0:13.7.0", "power_factor", P1Unit.None),
+			P1Value.GetNumberMapping("1-0:33.7.0", "power_factor_l1", P1Unit.None),
+			P1Value.GetNumberMapping("1-0:53.7.0", "power_factor_l2", P1Unit.None),
+			P1Value.GetNumberMapping("1-0:73.7.0", "power_factor_l3", P1Unit.None),
+			P1Value.GetNumberMapping("1-0:14.7.0", "frequency", P1Unit.Hz),
+			P1Value.GetNumberMapping("1-0:1.7.0", "import_power", P1Unit.kW),
+			P1Value.GetNumberMapping("1-0:2.7.0", "export_power", P1Unit.kW),
+			P1Value.GetNumberMapping("1-0:5.7.0", "reactive_power_q1", P1Unit.kvar),
+			P1Value.GetNumberMapping("1-0:6.7.0", "reactive_power_q2", P1Unit.kvar),
+			P1Value.GetNumberMapping("1-0:7.7.0", "reactive_power_q3", P1Unit.kvar),
+			P1Value.GetNumberMapping("1-0:8.7.0", "reactive_power_q4", P1Unit.kvar),
+			P1Value.GetNotNeededMapping("0-0:17.0.0", "limiter_limit"),
+			P1Value.GetNotNeededMapping("1-0:15.8.0", "energy_combined"),
+			P1Value.GetNotNeededMapping("1-0:31.4.0", "current_limit_l1"),
+			P1Value.GetNotNeededMapping("1-0:51.4.0", "current_limit_l2"),
+			P1Value.GetNotNeededMapping("1-0:71.4.0", "current_limit_l3"),
+			P1Value.GetNotNeededMapping("0-0:98.1.0", "previous_month"),
+			P1Value.GetNotNeededMapping("0-0:96.13.0", "message")
+		}
+		.ToDictionary(x => x.Id);
+
 	private readonly ILogger<DsmrReader> _logger;
 	private readonly ChannelWriter<List<P1Value>> _valuesWriter;
 	private readonly DsmrReaderOptions _options;
-	private readonly List<P1Value> _values = new();
+	private readonly List<P1Value> _values = new(ObisMappingsById.Count);
 	private readonly ModbusCrc _crc = new();
-
-	private static readonly ObisMapping[] ObisMappings = new[]
-	{
-		P1TimeValue.GetMapping("0-0:1.0.0", "time"),
-		P1StringValue.GetMapping("0-0:42.0.0", "name"),
-		P1StringValue.GetMapping("0-0:96.1.0", "serial"),
-		P1NumberValue.GetMapping("0-0:96.14.0", "tariff", P1Unit.None),
-		P1OnOffValue.GetMapping("0-0:96.50.68", "state"),
-		P1NumberValue.GetMapping("1-0:1.8.0", "import_energy", P1Unit.kWh),
-		P1NumberValue.GetMapping("1-0:1.8.1", "import_energy_tariff_1", P1Unit.kWh),
-		P1NumberValue.GetMapping("1-0:1.8.2", "import_energy_tariff_2", P1Unit.kWh),
-		P1NumberValue.GetMapping("1-0:1.8.3", "import_energy_tariff_3", P1Unit.kWh),
-		P1NumberValue.GetMapping("1-0:1.8.4", "import_energy_tariff_4", P1Unit.kWh),
-		P1NumberValue.GetMapping("1-0:2.8.0", "export_energy", P1Unit.kWh),
-		P1NumberValue.GetMapping("1-0:2.8.1", "export_energy_tariff_1", P1Unit.kWh),
-		P1NumberValue.GetMapping("1-0:2.8.2", "export_energy_tariff_2", P1Unit.kWh),
-		P1NumberValue.GetMapping("1-0:2.8.3", "export_energy_tariff_3", P1Unit.kWh),
-		P1NumberValue.GetMapping("1-0:2.8.4", "export_energy_tariff_4", P1Unit.kWh),
-		P1NumberValue.GetMapping("1-0:3.8.0", "import_reactive_energy", P1Unit.kvarh),
-		P1NumberValue.GetMapping("1-0:4.8.0", "export_reactive_energy", P1Unit.kvarh),
-		P1NumberValue.GetMapping("1-0:5.8.0", "reactive_energy_q1", P1Unit.kvarh),
-		P1NumberValue.GetMapping("1-0:6.8.0", "reactive_energy_q2", P1Unit.kvarh),
-		P1NumberValue.GetMapping("1-0:7.8.0", "reactive_energy_q3", P1Unit.kvarh),
-		P1NumberValue.GetMapping("1-0:8.8.0", "reactive_energy_q4", P1Unit.kvarh),
-		P1NumberValue.GetMapping("1-0:32.7.0", "voltage_l1", P1Unit.V),
-		P1NumberValue.GetMapping("1-0:52.7.0", "voltage_l2", P1Unit.V),
-		P1NumberValue.GetMapping("1-0:72.7.0", "voltage_l3", P1Unit.V),
-		P1NumberValue.GetMapping("1-0:31.7.0", "current_l1", P1Unit.A),
-		P1NumberValue.GetMapping("1-0:51.7.0", "current_l2", P1Unit.A),
-		P1NumberValue.GetMapping("1-0:71.7.0", "current_l3", P1Unit.A),
-		P1NumberValue.GetMapping("1-0:13.7.0", "power_factor", P1Unit.None),
-		P1NumberValue.GetMapping("1-0:33.7.0", "power_factor_l1", P1Unit.None),
-		P1NumberValue.GetMapping("1-0:53.7.0", "power_factor_l2", P1Unit.None),
-		P1NumberValue.GetMapping("1-0:73.7.0", "power_factor_l3", P1Unit.None),
-		P1NumberValue.GetMapping("1-0:14.7.0", "frequency", P1Unit.Hz),
-		P1NumberValue.GetMapping("1-0:1.7.0", "import_power", P1Unit.kW),
-		P1NumberValue.GetMapping("1-0:2.7.0", "export_power", P1Unit.kW),
-		P1NumberValue.GetMapping("1-0:5.7.0", "reactive_power_q1", P1Unit.kvar),
-		P1NumberValue.GetMapping("1-0:6.7.0", "reactive_power_q2", P1Unit.kvar),
-		P1NumberValue.GetMapping("1-0:7.7.0", "reactive_power_q3", P1Unit.kvar),
-		P1NumberValue.GetMapping("1-0:8.7.0", "reactive_power_q4", P1Unit.kvar),
-		P1NoValue.GetMapping("0-0:17.0.0", "limiter_limit"),
-		P1NoValue.GetMapping("1-0:15.8.0", "energy_combined"),
-		P1NoValue.GetMapping("1-0:31.4.0", "current_limit_l1"),
-		P1NoValue.GetMapping("1-0:51.4.0", "current_limit_l2"),
-		P1NoValue.GetMapping("1-0:71.4.0", "current_limit_l3"),
-		P1NoValue.GetMapping("0-0:98.1.0", "previous_month"),
-		P1NoValue.GetMapping("0-0:96.13.0", "message")
-	};
-
-	private static readonly Dictionary<string, ObisMapping> ObisMappingsById = ObisMappings.ToDictionary(m => m.Id);
-
 
 	private enum State
 	{
@@ -171,7 +170,7 @@ public partial class DsmrReader : BackgroundService
 	private void ProcessData(string line, Match dataMatch)
 	{
 		string id = dataMatch.Groups["id"].Value;
-		if (!ObisMappingsById.TryGetValue(id, out ObisMapping? mapping) || mapping == null)
+		if (!ObisMappingsById.TryGetValue(id, out ObisMapping mapping))
 		{
 			_logger.LogWarning("{Line}: unknown obis id, line dropped", line);
 			return;
@@ -204,7 +203,7 @@ public partial class DsmrReader : BackgroundService
 	[GeneratedRegex(@"^/...5\d+\z")]
 	private static partial Regex GetIdentRegex();
 
-	[GeneratedRegex(@"^(?<id>[01]-0:\d+.\d+.\d+)(?<datalist>\((?<data>.+)\))+\z")]
+	[GeneratedRegex(@"^(?<id>\d-\d:\d+.\d+.\d+)(?<datalist>\((?<data>.+)\))+\z")]
 	private static partial Regex GetDataLineRegex();
 
 	[GeneratedRegex(@"^!(?<crc>[0-9A-F]{4})\z")]

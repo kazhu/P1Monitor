@@ -3,7 +3,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Hosting.Systemd;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Console;
 using System.Diagnostics;
 using System.Threading.Channels;
 
@@ -38,7 +37,6 @@ public partial class Program
 				logging.AddConfiguration(hostingContext.Configuration.GetSection("Logging"));
 				logging.AddDebug();
 				logging.AddConsole();
-				//logging.AddSystemdConsole(options => options.TimestampFormat = "yyyy-MM-ddTHH:mm:ss ");
 			})
 			.ConfigureServices((hostContext, services) =>
 			{

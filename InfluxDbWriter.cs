@@ -33,7 +33,7 @@ public class InfluxDbWriter : BackgroundService
 			{
 				List<P1Value> values = await _valuesReader.ReadAsync(stoppingToken);
 				string content = GenerateLines(values);
-				HttpResponseMessage response = await client.PostAsync(requestUri, new StringContent(content), stoppingToken);
+				using HttpResponseMessage response = await client.PostAsync(requestUri, new StringContent(content), stoppingToken);
 				if (!response.IsSuccessStatusCode)
 				{
 					_logger.LogError("Error writing to InfluxDB: {StatusCode} {ReasonPhrase} {message}", response.StatusCode, response.ReasonPhrase, await response.Content.ReadAsStringAsync());
@@ -52,18 +52,19 @@ public class InfluxDbWriter : BackgroundService
 
 	private static string GenerateLines(List<P1Value> values)
 	{
-		var timeValue = values.OfType<P1TimeValue>().Single(x => x.FieldName == "time");
 		var builder = new StringBuilder();
-		foreach (var group in values.OfType<P1NumberValue>().GroupBy(x => x.Unit))
+		P1Value? timeValue = values.SingleOrDefault(x => x.P1Type == P1Type.Time && x.FieldName == "time");
+		List<P1Value> tagValues = values.Where(x => x.P1Type is P1Type.String or P1Type.OnOff).OrderBy(x => x.FieldName).ToList();
+		foreach (var group in values.Where(x => x.P1Type == P1Type.Number).GroupBy(x => x.Unit))
 		{
 			builder.Append("p1value");
-			foreach (var tagValue in values.OfType<P1StringValue>().OrderBy(x => x.FieldName))
+			foreach (P1Value tagValue in tagValues)
 			{
 				builder
 					.Append(',')
 					.Append(tagValue.FieldName)
 					.Append('=')
-					.Append(tagValue.Value);
+					.Append(tagValue.Data);
 			}
 			if (group.Key != P1Unit.None)
 			{
@@ -75,7 +76,7 @@ public class InfluxDbWriter : BackgroundService
 			builder.Append(' ');
 
 			bool isFirst = true;
-			foreach (P1NumberValue tagValue in group.OrderBy(x => x.FieldName))
+			foreach (P1Value tagValue in group)
 			{
 				if (isFirst)
 				{
@@ -88,13 +89,16 @@ public class InfluxDbWriter : BackgroundService
 				builder
 					.Append(tagValue.FieldName)
 					.Append('=')
-					.Append(tagValue.Value);
+					.Append(tagValue.Data);
 			}
 
-			builder
-				.Append(' ')
-				.Append(timeValue.Value.ToUnixTimeSeconds())
-				.Append('\n');
+			if (timeValue != null)
+			{
+				builder
+					.Append(' ')
+					.Append(timeValue.Value.Time!.Value.ToUnixTimeSeconds())
+					.Append('\n');
+			}
 		}
 		return builder.ToString();
 	}
