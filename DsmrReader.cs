@@ -1,7 +1,6 @@
 ﻿using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using System.Diagnostics;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -94,24 +93,21 @@ public partial class DsmrReader : BackgroundService
 				await socket.ConnectAsync(_options.Host, _options.Port, stoppingToken);
 				using var reader = new StreamReader(new NetworkStream(socket), Encoding.Latin1, detectEncodingFromByteOrderMarks: false);
 				State state = State.Starting;
-				for (string? line = await reader.ReadLineAsync(GetTokenWithTimeout(stoppingToken)); line != null; line = await reader.ReadLineAsync(GetTokenWithTimeout(stoppingToken)))
+				while (true)
 				{
+					using CancellationTokenSource linkedTokenSource = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+					linkedTokenSource.CancelAfter(TimeSpan.FromMinutes(1));
+					string? line = await reader.ReadLineAsync(linkedTokenSource.Token);
+					if (line == null) break;
 					state = ProcessLine(line, state);
 				}
 			}
-			catch (OperationCanceledException ex)
+			catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
 			{
-				if (stoppingToken.IsCancellationRequested)
-				{
-					_logger.LogInformation("DsmrReader stopped");
-					return;
-				}
-				else
-				{
-					_logger.LogError(ex, "Error reading from Dsmr, retrying");
-				}
+				_logger.LogInformation("DsmrReader stopped");
+				return;
 			}
-			catch (Exception ex) when (ex is not OperationCanceledException)
+			catch (Exception ex)
 			{
 				_logger.LogError(ex, "Error reading from Dsmr, retrying");
 			}
@@ -203,13 +199,6 @@ public partial class DsmrReader : BackgroundService
 			return;
 		}
 		_logger.LogDebug("{Count} values enqueued", _values.Count);
-	}
-
-	private CancellationToken GetTokenWithTimeout(CancellationToken stoppingToken)
-	{
-		var timeoutTokenSource = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-		timeoutTokenSource.CancelAfter(TimeSpan.FromMinutes(1));
-		return timeoutTokenSource.Token;
 	}
 
 	[GeneratedRegex(@"^/...5\d+\z")]
