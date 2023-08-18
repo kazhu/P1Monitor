@@ -1,73 +1,23 @@
 ﻿using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using System.Buffers;
+using System.IO.Pipelines;
 using System.Net.Sockets;
 using System.Text;
-using System.Text.RegularExpressions;
-using System.Threading.Channels;
 
 namespace P1Monitor;
 
 public partial class DsmrReader : BackgroundService
 {
-	private static readonly Dictionary<string, ObisMapping> ObisMappingsById =
-		new[]
-		{
-			P1Value.GetTimeMapping("0-0:1.0.0", "time"),
-			P1Value.GetStringMapping("0-0:42.0.0", "name"),
-			P1Value.GetStringMapping("0-0:96.1.0", "serial"),
-			P1Value.GetNumberMapping("0-0:96.14.0", "tariff", P1Unit.None),
-			P1Value.GetOnOffMapping("0-0:96.50.68", "state"),
-			P1Value.GetNumberMapping("1-0:1.8.0", "import_energy", P1Unit.kWh),
-			P1Value.GetNumberMapping("1-0:1.8.1", "import_energy_tariff_1", P1Unit.kWh),
-			P1Value.GetNumberMapping("1-0:1.8.2", "import_energy_tariff_2", P1Unit.kWh),
-			P1Value.GetNumberMapping("1-0:1.8.3", "import_energy_tariff_3", P1Unit.kWh),
-			P1Value.GetNumberMapping("1-0:1.8.4", "import_energy_tariff_4", P1Unit.kWh),
-			P1Value.GetNumberMapping("1-0:2.8.0", "export_energy", P1Unit.kWh),
-			P1Value.GetNumberMapping("1-0:2.8.1", "export_energy_tariff_1", P1Unit.kWh),
-			P1Value.GetNumberMapping("1-0:2.8.2", "export_energy_tariff_2", P1Unit.kWh),
-			P1Value.GetNumberMapping("1-0:2.8.3", "export_energy_tariff_3", P1Unit.kWh),
-			P1Value.GetNumberMapping("1-0:2.8.4", "export_energy_tariff_4", P1Unit.kWh),
-			P1Value.GetNumberMapping("1-0:3.8.0", "import_reactive_energy", P1Unit.kvarh),
-			P1Value.GetNumberMapping("1-0:4.8.0", "export_reactive_energy", P1Unit.kvarh),
-			P1Value.GetNumberMapping("1-0:5.8.0", "reactive_energy_q1", P1Unit.kvarh),
-			P1Value.GetNumberMapping("1-0:6.8.0", "reactive_energy_q2", P1Unit.kvarh),
-			P1Value.GetNumberMapping("1-0:7.8.0", "reactive_energy_q3", P1Unit.kvarh),
-			P1Value.GetNumberMapping("1-0:8.8.0", "reactive_energy_q4", P1Unit.kvarh),
-			P1Value.GetNumberMapping("1-0:32.7.0", "voltage_l1", P1Unit.V),
-			P1Value.GetNumberMapping("1-0:52.7.0", "voltage_l2", P1Unit.V),
-			P1Value.GetNumberMapping("1-0:72.7.0", "voltage_l3", P1Unit.V),
-			P1Value.GetNumberMapping("1-0:31.7.0", "current_l1", P1Unit.A),
-			P1Value.GetNumberMapping("1-0:51.7.0", "current_l2", P1Unit.A),
-			P1Value.GetNumberMapping("1-0:71.7.0", "current_l3", P1Unit.A),
-			P1Value.GetNumberMapping("1-0:13.7.0", "power_factor", P1Unit.None),
-			P1Value.GetNumberMapping("1-0:33.7.0", "power_factor_l1", P1Unit.None),
-			P1Value.GetNumberMapping("1-0:53.7.0", "power_factor_l2", P1Unit.None),
-			P1Value.GetNumberMapping("1-0:73.7.0", "power_factor_l3", P1Unit.None),
-			P1Value.GetNumberMapping("1-0:14.7.0", "frequency", P1Unit.Hz),
-			P1Value.GetNumberMapping("1-0:1.7.0", "import_power", P1Unit.kW),
-			P1Value.GetNumberMapping("1-0:2.7.0", "export_power", P1Unit.kW),
-			P1Value.GetNumberMapping("1-0:5.7.0", "reactive_power_q1", P1Unit.kvar),
-			P1Value.GetNumberMapping("1-0:6.7.0", "reactive_power_q2", P1Unit.kvar),
-			P1Value.GetNumberMapping("1-0:7.7.0", "reactive_power_q3", P1Unit.kvar),
-			P1Value.GetNumberMapping("1-0:8.7.0", "reactive_power_q4", P1Unit.kvar),
-			P1Value.GetNotNeededMapping("0-0:17.0.0", "limiter_limit"),
-			P1Value.GetNotNeededMapping("1-0:15.8.0", "energy_combined"),
-			P1Value.GetNotNeededMapping("1-0:31.4.0", "current_limit_l1"),
-			P1Value.GetNotNeededMapping("1-0:51.4.0", "current_limit_l2"),
-			P1Value.GetNotNeededMapping("1-0:71.4.0", "current_limit_l3"),
-			P1Value.GetNotNeededMapping("0-0:98.1.0", "previous_month"),
-			P1Value.GetNotNeededMapping("0-0:96.13.0", "message")
-		}
-		.ToDictionary(x => x.Id);
-
 	private readonly ILogger<DsmrReader> _logger;
-	private readonly ChannelWriter<List<P1Value>> _valuesWriter;
+	private readonly IInfluxDbWriter _influxDbWriter;
 	private readonly DsmrReaderOptions _options;
-	private readonly List<P1Value> _values = new(ObisMappingsById.Count);
+	private readonly P1Value[] _values;
 	private readonly ModbusCrc _crc = new();
+	private readonly Encoding _encoding = Encoding.Latin1;
 
-	private enum State
+	public enum State
 	{
 		Starting,
 		WaitingForIdent,
@@ -75,137 +25,272 @@ public partial class DsmrReader : BackgroundService
 		Data,
 	}
 
-	public DsmrReader(ILogger<DsmrReader> logger, ChannelWriter<List<P1Value>> valuesWriter, IOptions<DsmrReaderOptions> options)
+	public DsmrReader(ILogger<DsmrReader> logger, IInfluxDbWriter influxDbWriter, IOptions<DsmrReaderOptions> options)
 	{
 		_logger = logger;
-		_valuesWriter = valuesWriter;
+		_influxDbWriter = influxDbWriter;
 		_options = options.Value;
+		_values = new P1Value[ObisMapping.Mappings.Length];
 	}
 
 	protected override async Task ExecuteAsync(CancellationToken stoppingToken)
 	{
-		while (true)
+		var pipe = new Pipe();
+		Task socketReaderTask = ReadFromSocketAsync(pipe.Writer, stoppingToken);
+		Task lineProcessingTask = ProcessDataAsync(pipe.Reader, stoppingToken);
+
+		await Task.WhenAll(socketReaderTask, lineProcessingTask);
+	}
+
+	private async Task ReadFromSocketAsync(PipeWriter writer, CancellationToken cancellationToken)
+	{
+		while (!cancellationToken.IsCancellationRequested)
 		{
 			try
 			{
 				using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-				await socket.ConnectAsync(_options.Host, _options.Port, stoppingToken);
-				using var reader = new StreamReader(new NetworkStream(socket), Encoding.Latin1, detectEncodingFromByteOrderMarks: false);
-				State state = State.Starting;
-				while (true)
+				await socket.ConnectAsync(_options.Host, _options.Port, cancellationToken);
+				_logger.LogInformation("Connected to {Host}:{Port}", _options.Host, _options.Port);
+				while (!cancellationToken.IsCancellationRequested)
 				{
-					using CancellationTokenSource linkedTokenSource = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-					linkedTokenSource.CancelAfter(TimeSpan.FromMinutes(1));
-					string? line = await reader.ReadLineAsync(linkedTokenSource.Token);
-					if (line == null) break;
-					state = ProcessLine(line, state);
+					Memory<byte> memory = writer.GetMemory(512);
+					using (var linkedTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+					{
+						linkedTokenSource.CancelAfter(TimeSpan.FromMinutes(1));
+						int bytesRead = await socket.ReceiveAsync(memory, SocketFlags.None, linkedTokenSource.Token);
+						if (bytesRead == 0)
+						{
+							break;
+						}
+						writer.Advance(bytesRead);
+					}
+					FlushResult result = await writer.FlushAsync(cancellationToken);
+					if (result.IsCompleted)
+					{
+						break;
+					}
 				}
 			}
-			catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+			catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
 			{
 				_logger.LogInformation("DsmrReader stopped");
-				return;
+				break;
 			}
 			catch (Exception ex)
 			{
 				_logger.LogError(ex, "Error reading from Dsmr, retrying");
 			}
 		}
+		await writer.CompleteAsync();
 	}
 
-	private State ProcessLine(string line, State state)
+	private async Task ProcessDataAsync(PipeReader reader, CancellationToken cancellationToken)
 	{
+		State state = State.Starting;
+		while (!cancellationToken.IsCancellationRequested)
+		{
+			try
+			{
+				ReadResult result = await reader.ReadAsync(cancellationToken);
+				ReadOnlySequence<byte> buffer = result.Buffer;
+				while (true)
+				{
+					SequencePosition? position = buffer.PositionOf((byte)'\n');
+					if (position == null)
+					{
+						break;
+					}
+					int length = (int)buffer.GetOffset(position.Value);
+					if (length > 0)
+					{
+						using var lineMemory = TrimmedMemory.Create(length);
+						buffer.Slice(0, position.Value).CopyTo(lineMemory.Span);
+						await ProcessLine(lineMemory.Span, ref state, cancellationToken);
+					}
+					buffer = buffer.Slice(buffer.GetPosition(1, position.Value));
+					reader.AdvanceTo(buffer.Start, buffer.End);
+				}
+				if (result.IsCompleted)
+				{
+					break;
+				}
+			}
+			catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+			{
+				break;
+			}
+			catch (Exception ex)
+			{
+				_logger.LogError(ex, "Error while processing data");
+			}
+		}
+		await reader.CompleteAsync();
+	}
+
+	internal Task ProcessLine(ReadOnlySpan<byte> line, ref State state, CancellationToken cancellationToken)
+	{
+		// drop trailing \r
+		if (line.Length > 0 && line[^1] == '\r') line = line.Slice(0, line.Length - 1);
+
 		switch (state)
 		{
 			case State.Starting:
 			case State.WaitingForIdent:
-				if (!GetIdentRegex().IsMatch(line))
+				if (!IsIdentLine(line))
 				{
 					if (state == State.Starting)
 					{
-						_logger.LogInformation("{Line}: dropped, waiting for ident line", line);
+						_logger.LogInformation("{Line}: dropped, waiting for ident line", _encoding.GetString(line));
 					}
 					else
 					{
-						_logger.LogError("{Line}: dropped", line);
+						_logger.LogError("{Line}: dropped, waiting for ident line", _encoding.GetString(line));
 					}
-					return state;
+					return Task.CompletedTask;
 				}
-				_values.Clear();
+				for (int i = 0; i < ObisMapping.Mappings.Length; i++)
+				{
+					_values[i].Dispose();
+					_values[i] = default;
+				}
 				_crc.Reset();
 				_crc.UpdateWithLine(line);
-				return State.WaitingForData;
+				state = State.WaitingForData;
+				return Task.CompletedTask;
 			case State.WaitingForData:
-				if (line != "")
+				if (line.Length > 0)
 				{
-					_logger.LogError("{Line}: dropped", line);
-					return State.WaitingForIdent;
+					_logger.LogError("{Line}: dropped, expected an empty line", _encoding.GetString(line));
+					state = State.WaitingForIdent;
+					return Task.CompletedTask;
 				}
 				_crc.UpdateWithLine(line);
-				return State.Data;
+				state = State.Data;
+				return Task.CompletedTask;
 			case State.Data:
-				Match dataMatch = GetDataLineRegex().Match(line);
-				if (dataMatch.Success)
+				if (IsDataLine(line))
 				{
-					_crc.UpdateWithLine(line);
-					ProcessData(line, dataMatch);
-					return State.Data;
+					if (ProcessData(line))
+					{
+						return Task.CompletedTask;
+					}
 				}
-				Match crcMatch = GetCrcLineRegex().Match(line);
-				if (crcMatch.Success)
+				else if (IsCrcLine(line))
 				{
-					_crc.Update('!');
-					ProcessCrc(line, crcMatch);
+					Task task = ProcessCrc(line, cancellationToken);
+					state = State.WaitingForIdent;
+					return task;
 				}
 				else
 				{
-					_logger.LogError("{Line}: dropped", line);
+					_logger.LogError("{Line}: dropped not a data or crc line", _encoding.GetString(line));
 				}
-				return State.WaitingForIdent;
+				state = State.WaitingForIdent;
+				return Task.CompletedTask;
 			default:
 				throw new InvalidOperationException($"Unknown state {state}");
 		}
 	}
 
-	private void ProcessData(string line, Match dataMatch)
+	private bool ProcessData(ReadOnlySpan<byte> line)
 	{
-		string id = dataMatch.Groups["id"].Value;
-		if (!ObisMappingsById.TryGetValue(id, out ObisMapping mapping))
+		_crc.UpdateWithLine(line);
+
+		int index = line.IndexOf((byte)'(');
+		using var idMemory = TrimmedMemory.Create(line.Slice(0, index));
+
+		if (!ObisMapping.MappingById.TryGetValue(idMemory, out ObisMapping? mapping))
 		{
-			_logger.LogWarning("{Line}: unknown obis id, line dropped", line);
-			return;
+			_logger.LogWarning("{Line}: unknown obis id, line dropped", _encoding.GetString(line));
+			return true;
 		}
-		P1Value value = mapping.CreateValue(dataMatch.Groups["data"].Value);
-		if (!value.IsValid)
+		if (!_values[mapping.Index].IsEmpty)
 		{
-			_logger.LogError("{Line}: parsing of value failed", line);
-			return;
+			_logger.LogError("{Line}: duplicated value", _encoding.GetString(line));
+			return false;
 		}
-		_values.Add(value);
-		_logger.LogTrace("{Value} parsed", value);
+
+		_values[mapping.Index] = P1Value.Create(mapping, TrimmedMemory.Create(line.Slice(index + 1, line.Length - index - 2)));
+
+		if (!_values[mapping.Index].IsValid)
+		{
+			_logger.LogError("{Line}: parsing of value failed", _encoding.GetString(line));
+			return false;
+		}
+
+		if (_logger.IsEnabled(LogLevel.Trace))
+		{
+			var value = _values[mapping.Index];
+			_logger.LogTrace("{FieldName}: {Type} {Data} ({Unit}) parsed", value.Mapping.FieldName, value.Mapping.P1Type, _encoding.GetString(value.Data.Span), value.Mapping.Unit);
+		}
+		return true;
 	}
 
-	private void ProcessCrc(string line, Match crcMatch)
+	private Task ProcessCrc(ReadOnlySpan<byte> line, CancellationToken cancellationToken)
 	{
-		if (crcMatch.Groups["crc"].Value != _crc.GetCrc())
+		_crc.Update((byte)'!');
+		if (!_crc.IsEqual(line.Slice(1)))
 		{
-			_logger.LogError("{Line}: crc is invalid", line);
-			return;
+			_logger.LogError("{Line}: crc is invalid", _encoding.GetString(line));
+			return Task.CompletedTask;
 		}
-		if (!_valuesWriter.TryWrite(_values.ToList()))
+		for (int i = 0; i < ObisMapping.Mappings.Length; i++)
 		{
-			_logger.LogWarning("{Count} values was dropped, because channel is full", _values.Count);
-			return;
+			if (_values[i].IsEmpty)
+			{
+				_logger.LogError("{Id} is missing, dropping all values", _encoding.GetString(ObisMapping.Mappings[i].Id.Span));
+				return Task.CompletedTask;
+			}
 		}
-		_logger.LogDebug("{Count} values enqueued", _values.Count);
+		if (_logger.IsEnabled(LogLevel.Debug))
+		{
+			_logger.LogDebug("Enqueuing values for {Time}", _values[ObisMapping.MappingByFieldName["time"].Index].Time);
+		}
+		return _influxDbWriter.InsertAsync(_values, cancellationToken);
 	}
 
-	[GeneratedRegex(@"^/...5\d+\z")]
-	private static partial Regex GetIdentRegex();
+	private bool IsIdentLine(ReadOnlySpan<byte> line)
+	{
+		// @"^/...5[0-9]+\z"
+		if (line.Length < 6 || line[0] != '/' || line[4] != '5') return false;
+		for (int i = 5; i < line.Length; i++)
+			if (!IsDigit(line[i])) return false;
+		return true;
+	}
 
-	[GeneratedRegex(@"^(?<id>\d-\d:\d+.\d+.\d+)(?<datalist>\((?<data>.+)\))+\z")]
-	private static partial Regex GetDataLineRegex();
+	private bool IsDataLine(ReadOnlySpan<byte> line)
+	{
+		// @"^[0-9]-[0-9]:[0-9]+\.[0-9]+\.[0-9]+\(.+\)\z"
+		if (!(line.Length > 4 && IsDigit(line[0]) && line[1] == '-' && IsDigit(line[2]) && line[3] == ':')) return false;
+		int index = 4;
 
-	[GeneratedRegex(@"^!(?<crc>[0-9A-F]{4})\z")]
-	private static partial Regex GetCrcLineRegex();
+		if (!(index < line.Length && IsDigit(line[index++]))) return false;
+		while (index < line.Length && IsDigit(line[index])) index++;
+
+		if (!(index < line.Length && line[index++] == '.')) return false;
+
+		if (!(index < line.Length && IsDigit(line[index++]))) return false;
+		while (index < line.Length && IsDigit(line[index])) index++;
+
+		if (!(index < line.Length && line[index++] == '.')) return false;
+
+		if (!(index < line.Length && IsDigit(line[index++]))) return false;
+		while (index < line.Length && IsDigit(line[index])) index++;
+
+		if (!(index < line.Length && line[index++] == '(')) return false;
+
+		return index < line.Length - 1 && line[line.Length - 1] == ')';
+	}
+
+	private bool IsCrcLine(ReadOnlySpan<byte> line)
+	{
+		// @"^![0-9A-F]{4}\z"
+		return line.Length == 5 && line[0] == '!' && IsHexDigit(line[1]) && IsHexDigit(line[2]) && IsHexDigit(line[3]) && IsHexDigit(line[4]);
+	}
+
+	[MethodImpl(MethodImplOptions.AggressiveInlining)]
+	private bool IsDigit(byte value) => value >= '0' && value <= '9';
+
+	[MethodImpl(MethodImplOptions.AggressiveInlining)]
+	private bool IsHexDigit(byte value) => IsDigit(value) || (value >= 'A' && value <= 'F');
 }

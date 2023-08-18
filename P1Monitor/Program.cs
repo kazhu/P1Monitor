@@ -4,7 +4,6 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Hosting.Systemd;
 using Microsoft.Extensions.Logging;
 using System.Diagnostics;
-using System.Threading.Channels;
 
 namespace P1Monitor;
 
@@ -40,14 +39,10 @@ public partial class Program
 			})
 			.ConfigureServices((hostContext, services) =>
 			{
-				Channel<List<P1Value>> channel = Channel.CreateBounded<List<P1Value>>(new BoundedChannelOptions(100) { FullMode = BoundedChannelFullMode.DropOldest });
-				services.AddSingleton(typeof(ChannelReader<List<P1Value>>), channel.Reader);
-				services.AddSingleton(typeof(ChannelWriter<List<P1Value>>), channel.Writer);
-
 				services.Configure<InfluxDbOptions>(hostContext.Configuration.GetSection("InfluxDb"));
 				services.Configure<DsmrReaderOptions>(hostContext.Configuration.GetSection("DsmrReader"));
+				services.AddSingleton<IInfluxDbWriter, InfluxDbWriter>();
 				services.AddHostedService<DsmrReader>();
-				services.AddHostedService<InfluxDbWriter>();
 			})
 			.Build()
 			.RunAsync();

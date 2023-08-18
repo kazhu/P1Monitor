@@ -4,20 +4,14 @@ public class ModbusCrc
 {
 	private ushort _value;
 
-	public void UpdateWithLine(string line)
+	public void UpdateWithLine(ReadOnlySpan<byte> line)
 	{
 		for (int i = 0; i < line.Length; i++)
 		{
 			Update(line[i]);
 		}
-		Update('\r');
-		Update('\n');
-	}
-
-	public void Update(char data)
-	{
-		if (data > 255) throw new ArgumentOutOfRangeException(nameof(data), "data must be a byte");
-		Update((byte)data);
+		Update((byte)'\r');
+		Update((byte)'\n');
 	}
 
 	public void Update(byte data)
@@ -28,7 +22,19 @@ public class ModbusCrc
 
 	public void Reset() => _value = 0;
 
-	public string GetCrc() => _value.ToString("X4");
+	public bool IsEqual(ReadOnlySpan<byte> crc)
+	{
+		ushort tmp = _value;
+		byte b3 = (byte)(tmp & 0xF); tmp >>= 4;
+		byte b2 = (byte)(tmp & 0xF); tmp >>= 4;
+		byte b1 = (byte)(tmp & 0xF); tmp >>= 4;
+		byte b0 = (byte)(tmp & 0xF); 
+		return crc.Length == 4
+			&& crc[3] == (b3 < 10 ? '0' + b3 : 'A' - 10 + b3)
+			&& crc[2] == (b2 < 10 ? '0' + b2 : 'A' - 10 + b2)
+			&& crc[1] == (b1 < 10 ? '0' + b1 : 'A' - 10 + b1)
+			&& crc[0] == (b0 < 10 ? '0' + b0 : 'A' - 10 + b0);
+	}
 
 	private static readonly UInt16[] CrcLookupTable = new UInt16[]
 	{

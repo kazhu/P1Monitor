@@ -1,82 +1,83 @@
-﻿using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text;
-using System.Threading.Channels;
 
 namespace P1Monitor;
 
-public class InfluxDbWriter : BackgroundService
+public interface IInfluxDbWriter
+{
+	Task InsertAsync(P1Value[] values, CancellationToken cancellationToken);
+}
+
+public class InfluxDbWriter : IInfluxDbWriter
 {
 	private readonly ILogger<InfluxDbWriter> _logger;
-	private readonly ChannelReader<List<P1Value>> _valuesReader;
 	private readonly InfluxDbOptions _options;
+	private readonly HttpClient _client = new HttpClient();
+	private readonly string _requestUri;
+	private readonly MediaTypeHeaderValue _mediaTypeHeaderValue = new MediaTypeHeaderValue("text/plain", Encoding.UTF8.WebName);
 
-	public InfluxDbWriter(ILogger<InfluxDbWriter> logger, ChannelReader<List<P1Value>> valuesReader, IOptions<InfluxDbOptions> options)
+	public InfluxDbWriter(ILogger<InfluxDbWriter> logger, IOptions<InfluxDbOptions> options)
 	{
 		_logger = logger;
-		_valuesReader = valuesReader;
 		_options = options.Value;
+		_client.BaseAddress = new Uri(_options.BaseUrl);
+		_client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Token", _options.Token);
+		_requestUri = $"api/v2/write?org={_options.Organization}&bucket={_options.Bucket}&precision=s";
 	}
 
-	protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+	public async Task InsertAsync(P1Value[] values, CancellationToken cancellationToken)
 	{
-		using var client = new HttpClient();
-		client.BaseAddress = new Uri(_options.BaseUrl);
-		client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Token", _options.Token);
-		string requestUri = $"api/v2/write?org={_options.Organization}&bucket={_options.Bucket}&precision=s";
-
-		while (true)
+		try
 		{
-			try
+			using TrimmedMemory data = GenerateLines(values);
+			using ReadOnlyMemoryContent content = new ReadOnlyMemoryContent(data.Memory);
+			content.Headers.ContentType = _mediaTypeHeaderValue;
+			using HttpResponseMessage response = await _client.PostAsync(_requestUri, content, cancellationToken);
+			if (!response.IsSuccessStatusCode)
 			{
-				List<P1Value> values = await _valuesReader.ReadAsync(stoppingToken);
-				string content = GenerateLines(values);
-				using HttpResponseMessage response = await client.PostAsync(requestUri, new StringContent(content), stoppingToken);
-				if (!response.IsSuccessStatusCode)
-				{
-					_logger.LogError("Error writing to InfluxDB: {StatusCode} {ReasonPhrase} {message}", response.StatusCode, response.ReasonPhrase, await response.Content.ReadAsStringAsync());
-				}
-				else
-				{
-					_logger.LogDebug("Wrote {Count} values to InfluxDB", values.Count);
-				}
+				_logger.LogError("Error writing to InfluxDB: {StatusCode} {ReasonPhrase} {message}", response.StatusCode, response.ReasonPhrase, await response.Content.ReadAsStringAsync());
 			}
-			catch (Exception ex) when (ex is not OperationCanceledException)
+			else
 			{
-				_logger.LogError(ex, "Error writing to InfluxDB");
+				_logger.LogDebug("Wrote {Count} values to InfluxDB", values.Length);
 			}
+		}
+		catch (Exception ex) when (ex is not OperationCanceledException)
+		{
+			_logger.LogError(ex, "Error writing to InfluxDB");
 		}
 	}
 
-	private static string GenerateLines(List<P1Value> values)
+	private static TrimmedMemory GenerateLines(P1Value[] values)
 	{
-		var builder = new StringBuilder();
-		P1Value? timeValue = values.SingleOrDefault(x => x.P1Type == P1Type.Time && x.FieldName == "time");
-		List<P1Value> tagValues = values.Where(x => x.P1Type is P1Type.String or P1Type.OnOff).OrderBy(x => x.FieldName).ToList();
-		foreach (var group in values.Where(x => x.P1Type == P1Type.Number).GroupBy(x => x.Unit))
+		Span<byte> span = stackalloc byte[4096]; // 4096 is more than enough to hold all lines
+		Span<byte> original = span;
+		P1Value timeValue = values[ObisMapping.MappingByFieldName["time"].Index];
+		foreach (var mappingGroup in ObisMapping.NumberMappingsByUnit)
 		{
-			builder.Append("p1value");
-			foreach (P1Value tagValue in tagValues)
+			span = span.Append("p1value");
+			foreach (ObisMapping mapping in ObisMapping.Tags)
 			{
-				builder
+				span = span
 					.Append(',')
-					.Append(tagValue.FieldName)
+					.Append(mapping.FieldName)
 					.Append('=')
-					.Append(tagValue.Data);
+					.Append(values[mapping.Index].Data);
 			}
-			if (group.Key != P1Unit.None)
+			if (mappingGroup.Key != nameof(P1Unit.None))
 			{
-				builder
+				span = span
 					.Append(",unit=")
-					.Append(group.Key)
+					.Append(mappingGroup.Key)
 					.Append(' ');
 			}
-			builder.Append(' ');
+			span = span.Append(' ');
 
 			bool isFirst = true;
-			foreach (P1Value tagValue in group)
+			foreach (ObisMapping mapping in mappingGroup.Value)
 			{
 				if (isFirst)
 				{
@@ -84,22 +85,58 @@ public class InfluxDbWriter : BackgroundService
 				}
 				else
 				{
-					builder.Append(',');
+					span = span.Append(',');
 				}
-				builder
-					.Append(tagValue.FieldName)
+				span = span
+					.Append(mapping.FieldName)
 					.Append('=')
-					.Append(tagValue.Data);
+					.Append(values[mapping.Index].Data);
 			}
 
-			if (timeValue != null)
-			{
-				builder
-					.Append(' ')
-					.Append(timeValue.Value.Time!.Value.ToUnixTimeSeconds())
-					.Append('\n');
-			}
+			span = span
+				.Append(' ')
+				.Append(timeValue.Time!.Value.ToUnixTimeSeconds())
+				.Append('\r')
+				.Append('\n');
 		}
-		return builder.ToString();
+		return TrimmedMemory.Create(original.Slice(0, original.Length - span.Length));
+	}
+}
+
+public static class SpanExtensions
+{
+	public static Span<byte> Append(this Span<byte> span, char value)
+	{
+		span[0] = (byte)value;
+		return span.Slice(1);
+	}
+
+	public static Span<byte> Append(this Span<byte> span, string value)
+	{
+		for (var i = 0; i < value.Length; i++)
+		{
+			span[i] = (byte)value[i];
+		}
+		return span.Slice(value.Length);
+	}
+
+	public static Span<byte> Append(this Span<byte> span, TrimmedMemory data)
+	{
+		data.Span.CopyTo(span);
+		return span.Slice(data.Length);
+	}
+
+	public static Span<byte> Append(this Span<byte> span, long data)
+	{
+		Span<char> chars = stackalloc char[30];
+		if (data.TryFormat(chars, out int written, format: null, provider: CultureInfo.InvariantCulture))
+		{
+			for (int i = 0; i < written; i++)
+			{
+				span[i] = (byte)chars[i];
+			}
+			return span.Slice(written);
+		}
+		return Append(span, data.ToString(CultureInfo.InvariantCulture));
 	}
 }
