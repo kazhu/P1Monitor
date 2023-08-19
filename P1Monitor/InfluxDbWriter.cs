@@ -58,19 +58,19 @@ public class InfluxDbWriter : IInfluxDbWriter
 		P1Value timeValue = values[ObisMapping.MappingByFieldName["time"].Index];
 		foreach (var mappingGroup in ObisMapping.NumberMappingsByUnit)
 		{
-			span = span.Append("p1value");
+			span = span.Append("p1value"u8);
 			foreach (ObisMapping mapping in ObisMapping.Tags)
 			{
 				span = span
 					.Append(',')
 					.Append(mapping.FieldName)
 					.Append('=')
-					.Append(values[mapping.Index].Data);
+					.Append(values[mapping.Index].Data.Span);
 			}
 			if (mappingGroup.Key != nameof(P1Unit.None))
 			{
 				span = span
-					.Append(",unit=")
+					.Append(",unit="u8)
 					.Append(mappingGroup.Key)
 					.Append(' ');
 			}
@@ -90,7 +90,7 @@ public class InfluxDbWriter : IInfluxDbWriter
 				span = span
 					.Append(mapping.FieldName)
 					.Append('=')
-					.Append(values[mapping.Index].Data);
+					.Append(values[mapping.Index].Data.Span);
 			}
 
 			span = span
@@ -104,6 +104,12 @@ public class InfluxDbWriter : IInfluxDbWriter
 
 public static class SpanExtensions
 {
+	public static Span<byte> Append(this Span<byte> span, ReadOnlySpan<byte> value)
+	{
+		value.CopyTo(span);
+		return span.Slice(value.Length);
+	}
+
 	public static Span<byte> Append(this Span<byte> span, char value)
 	{
 		span[0] = (byte)value;
@@ -117,12 +123,6 @@ public static class SpanExtensions
 			span[i] = (byte)value[i];
 		}
 		return span.Slice(value.Length);
-	}
-
-	public static Span<byte> Append(this Span<byte> span, TrimmedMemory data)
-	{
-		data.Span.CopyTo(span);
-		return span.Slice(data.Length);
 	}
 
 	public static Span<byte> Append(this Span<byte> span, long data)
