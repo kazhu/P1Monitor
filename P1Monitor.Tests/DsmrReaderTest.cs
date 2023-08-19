@@ -41,11 +41,11 @@ public class DsmrReaderTest
 	[DataRow("/AUX59903218166\r", DsmrReader.State.Starting)]
 	[DataRow("/AUX59903218166", DsmrReader.State.WaitingForIdent)]
 	[DataRow("/AUX59903218166\r", DsmrReader.State.WaitingForIdent)]
-	public async Task TestIdentLineHappy(string line, DsmrReader.State initialState)
+	public void TestIdentLineHappy(string line, DsmrReader.State initialState)
 	{
 		DsmrReader.State state = initialState;
 
-		await _reader.ProcessLine(Encoding.Latin1.GetBytes(line), ref state, CancellationToken.None);
+		state = _reader.ProcessLine(Encoding.Latin1.GetBytes(line), state);
 
 		Assert.AreEqual(DsmrReader.State.WaitingForData, state);
 		Assert.AreEqual("{}", JsonSerializer.Serialize(_logger.Messages));
@@ -58,22 +58,22 @@ public class DsmrReaderTest
 	[DataRow("/AUX5", DsmrReader.State.WaitingForIdent, LogLevel.Error)]
 	[DataRow("0-0:1.0.0(230817171430S)", DsmrReader.State.WaitingForIdent, LogLevel.Error)]
 	[DataRow("!1B9B", DsmrReader.State.WaitingForIdent, LogLevel.Error)]
-	public async Task TestWaitingForIdentFailures(string line, DsmrReader.State state, LogLevel logLevel)
+	public void TestWaitingForIdentFailures(string line, DsmrReader.State state, LogLevel logLevel)
 	{
 		DsmrReader.State currentState = state;
 
-		await _reader.ProcessLine(Encoding.Latin1.GetBytes(line), ref state, CancellationToken.None);
+		state = _reader.ProcessLine(Encoding.Latin1.GetBytes(line), state);
 
 		Assert.AreEqual(state, currentState);
 		Assert.AreEqual($"{{\"{logLevel}\":[\"{line}: dropped, waiting for ident line\"]}}", JsonSerializer.Serialize(_logger.Messages));
 	}
 
 	[TestMethod]
-	public async Task TestWaitingForDataHappy()
+	public void TestWaitingForDataHappy()
 	{
 		var state = DsmrReader.State.WaitingForData;
 
-		await _reader.ProcessLine(Encoding.Latin1.GetBytes(""), ref state, CancellationToken.None);
+		state = _reader.ProcessLine(Encoding.Latin1.GetBytes(""), state);
 
 		Assert.AreEqual(DsmrReader.State.Data, state);
 		Assert.AreEqual("{}", JsonSerializer.Serialize(_logger.Messages));
@@ -83,11 +83,11 @@ public class DsmrReaderTest
 	[DataRow("/AUX59903218166")]
 	[DataRow("0-0:1.0.0(230817171430S)")]
 	[DataRow("!1B9B")]
-	public async Task TestWaitingForDataFailures(string line)
+	public void TestWaitingForDataFailures(string line)
 	{
 		var state = DsmrReader.State.WaitingForData;
 
-		await _reader.ProcessLine(Encoding.Latin1.GetBytes(line), ref state, CancellationToken.None);
+		state = _reader.ProcessLine(Encoding.Latin1.GetBytes(line), state);
 
 		Assert.AreEqual(DsmrReader.State.WaitingForIdent, state);
 		Assert.AreEqual($"{{\"Error\":[\"{line}: dropped, expected an empty line\"]}}", JsonSerializer.Serialize(_logger.Messages));
@@ -108,25 +108,25 @@ public class DsmrReaderTest
 	[DataRow("1-0:1.7.0(00.250*kW)", "0.25", "import_power", P1Type.Number, P1Unit.kW)]
 	[DataRow("1-0:5.7.0(00.000*kvar)", "0.0", "reactive_power_q1", P1Type.Number, P1Unit.kvar)]
 	[DataRow("0-0:98.1.0(230801000000S)(000663.924*kWh)", "230801000000S)(000663.924*kWh", "previous_month", P1Type.NotNeeded)]
-	public async Task TestDataHappy(string line, string value, string fieldName, P1Type p1Type, P1Unit unit = P1Unit.None)
+	public void TestDataHappy(string line, string value, string fieldName, P1Type p1Type, P1Unit unit = P1Unit.None)
 	{
 		var state = DsmrReader.State.Data;
 
-		await _reader.ProcessLine(Encoding.Latin1.GetBytes(line), ref state, CancellationToken.None);
+		state = _reader.ProcessLine(Encoding.Latin1.GetBytes(line), state);
 
 		Assert.AreEqual(DsmrReader.State.Data, state);
 		Assert.AreEqual($"{{\"Trace\":[\"{fieldName}: {p1Type} {value} ({unit}) parsed\"]}}", JsonSerializer.Serialize(_logger.Messages));
 	}
 
 	[TestMethod]
-	public async Task TestDataDuplication()
+	public void TestDataDuplication()
 	{
 		var state = DsmrReader.State.Data;
-		await _reader.ProcessLine(Encoding.Latin1.GetBytes("0-0:96.50.68(ON)"), ref state, CancellationToken.None);
+		state = _reader.ProcessLine(Encoding.Latin1.GetBytes("0-0:96.50.68(ON)"), state);
 		Assert.AreEqual(DsmrReader.State.Data, state);
 		_logger.Messages.Clear();
 
-		await _reader.ProcessLine(Encoding.Latin1.GetBytes("0-0:96.50.68(ON)"), ref state, CancellationToken.None);
+		state = _reader.ProcessLine(Encoding.Latin1.GetBytes("0-0:96.50.68(ON)"), state);
 
 		Assert.AreEqual(DsmrReader.State.WaitingForIdent, state);
 		Assert.AreEqual($"{{\"Error\":[\"0-0:96.50.68(ON): duplicated value\"]}}", JsonSerializer.Serialize(_logger.Messages));
@@ -149,11 +149,11 @@ public class DsmrReaderTest
 	[DataRow("0-0:96.14.0(X)", "parsing of value failed")] // X is not a valid number
 	[DataRow("1-0:1.8.0(000812.421*kW)", "parsing of value failed")] // wrong unit
 	[DataRow("0-0:99.99.99(1.1)", "unknown obis id, line dropped", LogLevel.Warning, DsmrReader.State.Data)]
-	public async Task TestDataFailure(string line, string expectedLog, LogLevel logLevel = LogLevel.Error, DsmrReader.State newState = DsmrReader.State.WaitingForIdent)
+	public void TestDataFailure(string line, string expectedLog, LogLevel logLevel = LogLevel.Error, DsmrReader.State newState = DsmrReader.State.WaitingForIdent)
 	{
 		var state = DsmrReader.State.Data;
 
-		await _reader.ProcessLine(Encoding.Latin1.GetBytes(line), ref state, CancellationToken.None);
+		state = _reader.ProcessLine(Encoding.Latin1.GetBytes(line), state);
 
 		Assert.AreEqual(newState, state);
 		Assert.AreEqual($"{{\"{logLevel}\":[\"{line}: {expectedLog}\"]}}", JsonSerializer.Serialize(_logger.Messages));
@@ -212,20 +212,20 @@ public class DsmrReaderTest
 		""";
 
 	[TestMethod]
-	public async Task TestAllHappy()
+	public void TestAllHappy()
 	{
 		string[] lines = SamplePacket.Split('\n');
 		var state = DsmrReader.State.WaitingForIdent;
 		for (int i = 0; i < lines.Length - 1; i++)
 		{
-			await _reader.ProcessLine(Encoding.Latin1.GetBytes(lines[i]), ref state, CancellationToken.None);
+			state = _reader.ProcessLine(Encoding.Latin1.GetBytes(lines[i]), state);
 		}
 
 		_logger.Messages.Remove(LogLevel.Trace);
 		Assert.AreEqual("{}", JsonSerializer.Serialize(_logger.Messages));
 		Assert.AreEqual(0, _influxDbWriter.Values.Count);
 
-		await _reader.ProcessLine(Encoding.Latin1.GetBytes(lines[^1]), ref state, CancellationToken.None);
+		state = _reader.ProcessLine(Encoding.Latin1.GetBytes(lines[^1]), state);
 
 		Assert.AreEqual(DsmrReader.State.WaitingForIdent, state);
 
@@ -304,14 +304,14 @@ public class DsmrReaderTest
 	}
 
 	[TestMethod]
-	public async Task TestTwoPackets()
+	public void TestTwoPackets()
 	{
 		string[] lines = (SamplePacket + "\r\n" + SamplePacket).Split("\r\n");
 
 		var state = DsmrReader.State.WaitingForIdent;
 		for (int i = 0; i < lines.Length; i++)
 		{
-			await _reader.ProcessLine(Encoding.Latin1.GetBytes(lines[i]), ref state, CancellationToken.None);
+			state = _reader.ProcessLine(Encoding.Latin1.GetBytes(lines[i]), state);
 		}
 
 		Assert.AreEqual(DsmrReader.State.WaitingForIdent, state);
@@ -322,7 +322,7 @@ public class DsmrReaderTest
 	}
 
 	[TestMethod]
-	public async Task TestMissingData()
+	public void TestMissingData()
 	{
 		const string SamplePacketWithMissingLine =
 			"""
@@ -379,7 +379,7 @@ public class DsmrReaderTest
 		var state = DsmrReader.State.WaitingForIdent;
 		for (int i = 0; i < lines.Length; i++)
 		{
-			await _reader.ProcessLine(Encoding.Latin1.GetBytes(lines[i]), ref state, CancellationToken.None);
+			state = _reader.ProcessLine(Encoding.Latin1.GetBytes(lines[i]), state);
 		}
 
 		Assert.AreEqual(DsmrReader.State.WaitingForIdent, state);
@@ -389,14 +389,14 @@ public class DsmrReaderTest
 
 
 	[TestMethod]
-	public async Task TestBadCrc()
+	public void TestBadCrc()
 	{
 		string[] lines = SamplePacket.Split("\r\n");
 		lines[^1] = lines[^1] == "!0000" ? "!0001" : "!0000";
 		var state = DsmrReader.State.WaitingForIdent;
 		for (int i = 0; i < lines.Length; i++)
 		{
-			await _reader.ProcessLine(Encoding.Latin1.GetBytes(lines[i]), ref state, CancellationToken.None);
+			state = _reader.ProcessLine(Encoding.Latin1.GetBytes(lines[i]), state);
 		}
 
 		Assert.AreEqual(DsmrReader.State.WaitingForIdent, state);

@@ -2,7 +2,6 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Buffers;
-using System.IO.Pipelines;
 using System.Net.Sockets;
 using System.Text;
 
@@ -16,6 +15,7 @@ public partial class DsmrReader : BackgroundService
 	private readonly P1Value[] _values;
 	private readonly ModbusCrc _crc = new();
 	private readonly Encoding _encoding = Encoding.Latin1;
+	private readonly Thread _thread;
 
 	public enum State
 	{
@@ -31,103 +31,77 @@ public partial class DsmrReader : BackgroundService
 		_influxDbWriter = influxDbWriter;
 		_options = options.Value;
 		_values = new P1Value[ObisMapping.Mappings.Length];
+		_thread = new Thread(Run) { IsBackground = true };
 	}
 
-	protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+	protected override Task ExecuteAsync(CancellationToken stoppingToken)
 	{
-		var pipe = new Pipe();
-		Task socketReaderTask = ReadFromSocketAsync(pipe.Writer, stoppingToken);
-		Task lineProcessingTask = ProcessDataAsync(pipe.Reader, stoppingToken);
-
-		await Task.WhenAll(socketReaderTask, lineProcessingTask);
+		_thread.Start();
+		return Task.CompletedTask;
 	}
 
-	private async Task ReadFromSocketAsync(PipeWriter writer, CancellationToken cancellationToken)
+	private void Run()
 	{
-		while (!cancellationToken.IsCancellationRequested)
+		var state = State.Starting;
+		while (true)
 		{
 			try
 			{
 				using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-				await socket.ConnectAsync(_options.Host, _options.Port, cancellationToken);
+				socket.ReceiveTimeout = (int)TimeSpan.FromMinutes(1).TotalMilliseconds;
+				socket.Connect(_options.Host, _options.Port);
 				_logger.LogInformation("Connected to {Host}:{Port}", _options.Host, _options.Port);
-				while (!cancellationToken.IsCancellationRequested)
+				byte[] buffer = ArrayPool<byte>.Shared.Rent(2048 + 16);
+				try
 				{
-					Memory<byte> memory = writer.GetMemory(512);
-					using (var linkedTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+					int count = 0;
+					while (true)
 					{
-						linkedTokenSource.CancelAfter(TimeSpan.FromMinutes(1));
-						int bytesRead = await socket.ReceiveAsync(memory, SocketFlags.None, linkedTokenSource.Token);
+						if (buffer.Length - count < 16)
+						{
+							_logger.LogWarning("Buffer full, dropping {Count} bytes of data\n{data}", count, Encoding.Latin1.GetString(buffer.AsSpan(0, count)));
+							count = 0;
+						}
+						int bytesRead = socket.Receive(buffer, count, buffer.Length - count, SocketFlags.None);
 						if (bytesRead == 0)
 						{
 							break;
 						}
-						writer.Advance(bytesRead);
-					}
-					FlushResult result = await writer.FlushAsync(cancellationToken);
-					if (result.IsCompleted)
-					{
-						break;
+						count += bytesRead;
+						ReadOnlySpan<byte> span = buffer.AsSpan(0, count);
+						while (true)
+						{
+							int index = span.IndexOf((byte)'\n');
+							if (index < 0)
+							{
+								if (span.Length != count)
+								{
+									if (span.Length > 0)
+									{
+										span.CopyTo(buffer);
+									}
+									count = span.Length;
+								}
+								break;
+							}
+							state = ProcessLine(span.Slice(0, index), state);
+							span = span.Slice(index + 1);
+						}
 					}
 				}
-			}
-			catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-			{
-				_logger.LogInformation("DsmrReader stopped");
-				break;
+				finally
+				{
+					ArrayPool<byte>.Shared.Return(buffer);
+				}
 			}
 			catch (Exception ex)
 			{
 				_logger.LogError(ex, "Error reading from Dsmr, retrying");
 			}
 		}
-		await writer.CompleteAsync();
 	}
 
-	private async Task ProcessDataAsync(PipeReader reader, CancellationToken cancellationToken)
-	{
-		State state = State.Starting;
-		while (!cancellationToken.IsCancellationRequested)
-		{
-			try
-			{
-				ReadResult result = await reader.ReadAsync(cancellationToken);
-				ReadOnlySequence<byte> buffer = result.Buffer;
-				while (true)
-				{
-					SequencePosition? position = buffer.PositionOf((byte)'\n');
-					if (position == null)
-					{
-						break;
-					}
-					int length = (int)(buffer.GetOffset(position.Value) - buffer.GetOffset(buffer.Start));
-					if (length > 0)
-					{
-						using var lineMemory = TrimmedMemory.Create(length);
-						buffer.Slice(0, position.Value).CopyTo(lineMemory.Span);
-						await ProcessLine(lineMemory.Span, ref state, cancellationToken);
-					}
-					buffer = buffer.Slice(buffer.GetPosition(1, position.Value));
-				}
-				reader.AdvanceTo(buffer.Start, buffer.End);
-				if (result.IsCompleted)
-				{
-					break;
-				}
-			}
-			catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-			{
-				break;
-			}
-			catch (Exception ex)
-			{
-				_logger.LogError(ex, "Error while processing data");
-			}
-		}
-		await reader.CompleteAsync();
-	}
-
-	internal Task ProcessLine(ReadOnlySpan<byte> line, ref State state, CancellationToken cancellationToken)
+	internal State ProcessLine(ReadOnlySpan<byte> line, State state)
 	{
 		// drop trailing \r
 		if (line.Length > 0 && line[^1] == '\r') line = line.Slice(0, line.Length - 1);
@@ -146,7 +120,7 @@ public partial class DsmrReader : BackgroundService
 					{
 						_logger.LogError("{Line}: dropped, waiting for ident line", _encoding.GetString(line));
 					}
-					return Task.CompletedTask;
+					return state;
 				}
 				for (int i = 0; i < ObisMapping.Mappings.Length; i++)
 				{
@@ -155,38 +129,32 @@ public partial class DsmrReader : BackgroundService
 				}
 				_crc.Reset();
 				_crc.UpdateWithLine(line);
-				state = State.WaitingForData;
-				return Task.CompletedTask;
+				return State.WaitingForData;
 			case State.WaitingForData:
 				if (line.Length > 0)
 				{
 					_logger.LogError("{Line}: dropped, expected an empty line", _encoding.GetString(line));
-					state = State.WaitingForIdent;
-					return Task.CompletedTask;
+					return State.WaitingForIdent;
 				}
 				_crc.UpdateWithLine(line);
-				state = State.Data;
-				return Task.CompletedTask;
+				return State.Data;
 			case State.Data:
 				if (IsDataLine(line))
 				{
 					if (ProcessData(line))
 					{
-						return Task.CompletedTask;
+						return state;
 					}
 				}
 				else if (IsCrcLine(line))
 				{
-					Task task = ProcessCrc(line, cancellationToken);
-					state = State.WaitingForIdent;
-					return task;
+					ProcessCrc(line);
 				}
 				else
 				{
 					_logger.LogError("{Line}: dropped not a data or crc line", _encoding.GetString(line));
 				}
-				state = State.WaitingForIdent;
-				return Task.CompletedTask;
+				return State.WaitingForIdent;
 			default:
 				throw new InvalidOperationException($"Unknown state {state}");
 		}
@@ -226,27 +194,27 @@ public partial class DsmrReader : BackgroundService
 		return true;
 	}
 
-	private Task ProcessCrc(ReadOnlySpan<byte> line, CancellationToken cancellationToken)
+	private void ProcessCrc(ReadOnlySpan<byte> line)
 	{
 		_crc.Update((byte)'!');
 		if (!_crc.IsEqual(line.Slice(1)))
 		{
 			_logger.LogError("{Line}: crc is invalid", _encoding.GetString(line));
-			return Task.CompletedTask;
+			return;
 		}
 		for (int i = 0; i < ObisMapping.Mappings.Length; i++)
 		{
 			if (_values[i].IsEmpty)
 			{
 				_logger.LogError("{Id} is missing, dropping all values", _encoding.GetString(ObisMapping.Mappings[i].Id.Span));
-				return Task.CompletedTask;
+				return;
 			}
 		}
 		if (_logger.IsEnabled(LogLevel.Debug))
 		{
 			_logger.LogDebug("Enqueuing values for {Time}", _values[ObisMapping.MappingByFieldName["time"].Index].Time);
 		}
-		return _influxDbWriter.InsertAsync(_values, cancellationToken);
+		_influxDbWriter.Insert(_values);
 	}
 
 	private bool IsIdentLine(ReadOnlySpan<byte> line)

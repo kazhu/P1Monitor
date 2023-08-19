@@ -6,9 +6,8 @@ public class TestInfluxDbWriter : IInfluxDbWriter
 {
 	public List<P1Value[]> Values { get; } = new();
 
-	public Task InsertAsync(P1Value[] values, CancellationToken cancellationToken)
+	public void Insert(P1Value[] values)
 	{
 		Values.Add(values);
-		return Task.CompletedTask;
 	}
 }

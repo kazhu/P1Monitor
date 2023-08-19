@@ -21,7 +21,7 @@ public class DsmrReaderBenchmark
 
 	private class NullInfluxDbWriter : IInfluxDbWriter
 	{
-		public Task InsertAsync(P1Value[] values, CancellationToken cancellationToken) => Task.CompletedTask;
+		public void Insert(P1Value[] values) { }
 	}
 
 
@@ -31,7 +31,7 @@ public class DsmrReaderBenchmark
 		var state = DsmrReader.State.Starting;
 		foreach (var line in _lines)
 		{
-			await _reader.ProcessLine(line.Span, ref state, CancellationToken.None);
+			state = _reader.ProcessLine(line.Span, state);
 		}
 	}
 

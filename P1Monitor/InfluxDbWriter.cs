@@ -1,5 +1,6 @@
 ﻿using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text;
@@ -8,7 +9,7 @@ namespace P1Monitor;
 
 public interface IInfluxDbWriter
 {
-	Task InsertAsync(P1Value[] values, CancellationToken cancellationToken);
+	void Insert(P1Value[] values);
 }
 
 public class InfluxDbWriter : IInfluxDbWriter
@@ -18,6 +19,7 @@ public class InfluxDbWriter : IInfluxDbWriter
 	private readonly HttpClient _client = new HttpClient();
 	private readonly string _requestUri;
 	private readonly MediaTypeHeaderValue _mediaTypeHeaderValue = new MediaTypeHeaderValue("text/plain", Encoding.UTF8.WebName);
+	private readonly BlockingCollection<TrimmedMemory> _blockingCollection = new();
 
 	public InfluxDbWriter(ILogger<InfluxDbWriter> logger, IOptions<InfluxDbOptions> options)
 	{
@@ -26,29 +28,43 @@ public class InfluxDbWriter : IInfluxDbWriter
 		_client.BaseAddress = new Uri(_options.BaseUrl);
 		_client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Token", _options.Token);
 		_requestUri = $"api/v2/write?org={_options.Organization}&bucket={_options.Bucket}&precision=s";
+		new Thread(InsertLines) { IsBackground = true }.Start();
 	}
 
-	public async Task InsertAsync(P1Value[] values, CancellationToken cancellationToken)
+	private void InsertLines()
 	{
 		try
 		{
-			using TrimmedMemory data = GenerateLines(values);
-			using ReadOnlyMemoryContent content = new ReadOnlyMemoryContent(data.Memory);
-			content.Headers.ContentType = _mediaTypeHeaderValue;
-			using HttpResponseMessage response = await _client.PostAsync(_requestUri, content, cancellationToken);
-			if (!response.IsSuccessStatusCode)
+			foreach (var data in _blockingCollection.GetConsumingEnumerable())
 			{
-				_logger.LogError("Error writing to InfluxDB: {StatusCode} {ReasonPhrase} {message}", response.StatusCode, response.ReasonPhrase, await response.Content.ReadAsStringAsync());
-			}
-			else
-			{
-				_logger.LogDebug("Wrote {Count} values to InfluxDB", values.Length);
+				using (data)
+				{
+					using ReadOnlyMemoryContent content = new ReadOnlyMemoryContent(data.Memory);
+					content.Headers.ContentType = _mediaTypeHeaderValue;
+					using var request = new HttpRequestMessage(HttpMethod.Post, _requestUri) { Content = content };
+					using HttpResponseMessage response = _client.Send(request);
+					if (!response.IsSuccessStatusCode)
+					{
+						using var streamReader = new StreamReader(response.Content.ReadAsStream());
+						_logger.LogError("Error writing to InfluxDB: {StatusCode} {ReasonPhrase} {message}", response.StatusCode, response.ReasonPhrase, streamReader.ReadToEnd());
+					}
+					else
+					{
+						_logger.LogDebug("Wrote {Length} long values to InfluxDB", data.Length);
+					}
+				}
 			}
 		}
 		catch (Exception ex) when (ex is not OperationCanceledException)
 		{
 			_logger.LogError(ex, "Error writing to InfluxDB");
 		}
+	}
+
+
+	public void Insert(P1Value[] values)
+	{
+		_blockingCollection.Add(GenerateLines(values));
 	}
 
 	private static TrimmedMemory GenerateLines(P1Value[] values)
