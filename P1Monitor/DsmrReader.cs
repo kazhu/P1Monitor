@@ -100,7 +100,7 @@ public partial class DsmrReader : BackgroundService
 					{
 						break;
 					}
-					int length = (int)buffer.GetOffset(position.Value);
+					int length = (int)(buffer.GetOffset(position.Value) - buffer.GetOffset(buffer.Start));
 					if (length > 0)
 					{
 						using var lineMemory = TrimmedMemory.Create(length);
@@ -108,8 +108,8 @@ public partial class DsmrReader : BackgroundService
 						await ProcessLine(lineMemory.Span, ref state, cancellationToken);
 					}
 					buffer = buffer.Slice(buffer.GetPosition(1, position.Value));
-					reader.AdvanceTo(buffer.Start, buffer.End);
 				}
+				reader.AdvanceTo(buffer.Start, buffer.End);
 				if (result.IsCompleted)
 				{
 					break;

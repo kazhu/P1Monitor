@@ -96,7 +96,6 @@ public class InfluxDbWriter : IInfluxDbWriter
 			span = span
 				.Append(' ')
 				.Append(timeValue.Time!.Value.ToUnixTimeSeconds())
-				.Append('\r')
 				.Append('\n');
 		}
 		return TrimmedMemory.Create(original.Slice(0, original.Length - span.Length));
