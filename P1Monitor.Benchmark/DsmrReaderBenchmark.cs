@@ -26,7 +26,7 @@ public class DsmrReaderBenchmark
 
 
 	[Benchmark]
-	public async Task Test()
+	public void Test()
 	{
 		var state = DsmrReader.State.Starting;
 		foreach (var line in _lines)
