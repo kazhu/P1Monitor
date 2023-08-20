@@ -42,6 +42,7 @@ public partial class DsmrReader : BackgroundService
 
 	private void Run()
 	{
+		Span<byte> buffer = stackalloc byte[2048 + 16];
 		var state = State.Starting;
 		while (true)
 		{
@@ -51,47 +52,39 @@ public partial class DsmrReader : BackgroundService
 				socket.ReceiveTimeout = (int)TimeSpan.FromMinutes(1).TotalMilliseconds;
 				socket.Connect(_options.Host, _options.Port);
 				_logger.LogInformation("Connected to {Host}:{Port}", _options.Host, _options.Port);
-				byte[] buffer = ArrayPool<byte>.Shared.Rent(2048 + 16);
-				try
+				int count = 0;
+				while (true)
 				{
-					int count = 0;
+					if (buffer.Length - count < 16)
+					{
+						_logger.LogWarning("Buffer full, dropping {Count} bytes of data\n{data}", count, Encoding.Latin1.GetString(buffer.Slice(0, count)));
+						count = 0;
+					}
+					int bytesRead = socket.Receive(buffer.Slice(count, buffer.Length - count), SocketFlags.None);
+					if (bytesRead == 0)
+					{
+						break;
+					}
+					count += bytesRead;
+					ReadOnlySpan<byte> span = buffer.Slice(0, count);
 					while (true)
 					{
-						if (buffer.Length - count < 16)
+						int index = span.IndexOf((byte)'\n');
+						if (index < 0)
 						{
-							_logger.LogWarning("Buffer full, dropping {Count} bytes of data\n{data}", count, Encoding.Latin1.GetString(buffer.AsSpan(0, count)));
-							count = 0;
-						}
-						int bytesRead = socket.Receive(buffer, count, buffer.Length - count, SocketFlags.None);
-						if (bytesRead == 0)
-						{
+							if (span.Length != count)
+							{
+								if (span.Length > 0)
+								{
+									span.CopyTo(buffer);
+								}
+								count = span.Length;
+							}
 							break;
 						}
-						count += bytesRead;
-						ReadOnlySpan<byte> span = buffer.AsSpan(0, count);
-						while (true)
-						{
-							int index = span.IndexOf((byte)'\n');
-							if (index < 0)
-							{
-								if (span.Length != count)
-								{
-									if (span.Length > 0)
-									{
-										span.CopyTo(buffer);
-									}
-									count = span.Length;
-								}
-								break;
-							}
-							state = ProcessLine(span.Slice(0, index), state);
-							span = span.Slice(index + 1);
-						}
+						state = ProcessLine(span.Slice(0, index), state);
+						span = span.Slice(index + 1);
 					}
-				}
-				finally
-				{
-					ArrayPool<byte>.Shared.Return(buffer);
 				}
 			}
 			catch (Exception ex)
