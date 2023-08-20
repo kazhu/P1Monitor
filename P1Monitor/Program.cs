@@ -25,8 +25,9 @@ public partial class Program
 			.UseSystemd()
 			.ConfigureAppConfiguration((hostingContext, config) =>
 			{
-				config.AddJsonFile(Path.Combine(configPath, "appsettings.json"), optional: true);
-				config.AddJsonFile(Path.Combine(configPath, $"appsettings.{hostingContext.HostingEnvironment.EnvironmentName}.json"), optional: true);
+				config.Sources.Clear(); // removing default configuration sources to get rid of the default AddJsonFile calls to avoid high CPU usage on Linux
+				AddConfigFile(config, configPath, "appsettings.json");
+				AddConfigFile(config, configPath, $"appsettings.{hostingContext.HostingEnvironment.EnvironmentName}.json");
 				config.AddEnvironmentVariables(prefix: "P1Monitor_");
 				config.AddCommandLine(args);
 			})
@@ -47,4 +48,15 @@ public partial class Program
 			.Build()
 			.RunAsync();
 	}
+
+	private static void AddConfigFile(IConfigurationBuilder config, string configPath, string fileName)
+	{
+		var path = Path.Combine(configPath, fileName);
+		if (File.Exists(path))
+		{
+			// Uses AddJsonStream instead of AddJsonFile, which yields usage of FileSystemWatcher indirectly, which causes high CPU usage on Linux
+			config.AddJsonStream(new MemoryStream(File.ReadAllBytes(path))); 
+		}
+	}
 }
+
