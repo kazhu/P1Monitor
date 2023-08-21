@@ -1,6 +1,4 @@
-﻿using System.Threading.Channels;
-
-namespace P1Monitor.Tests;
+﻿namespace P1Monitor.Tests;
 
 public class TestInfluxDbWriter : IInfluxDbWriter
 {
@@ -8,6 +6,6 @@ public class TestInfluxDbWriter : IInfluxDbWriter
 
 	public void Insert(P1Value[] values)
 	{
-		Values.Add(values);
+		Values.Add(values.Select(x => x with { Data = new TrimmedMemory(x.Data.Memory.Span) } ).ToArray());
 	}
 }

@@ -1,57 +1,24 @@
 ﻿using System.Buffers;
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 
 namespace P1Monitor;
 
 public readonly struct TrimmedMemory : IDisposable, IEquatable<TrimmedMemory>
 {
-	private readonly byte[]? _ownedMemory;
+	private readonly byte[] _ownedMemory;
 	private readonly int _offset;
 	private readonly int _length;
-	
-	public static readonly TrimmedMemory Empty = default;
 
-	private TrimmedMemory(byte[]? ownedMemory, int offset, int length)
+	public TrimmedMemory(ReadOnlySpan<byte> span)
 	{
-		_ownedMemory = ownedMemory;
-		_offset = offset;
-		_length = length;
+		_ownedMemory = ArrayPool<byte>.Shared.Rent(span.Length);
+		_offset = 0;
+		_length = span.Length;
+		span.CopyTo(_ownedMemory);
 	}
 
-	public Memory<byte> Memory => new Memory<byte>(_ownedMemory!).Slice(_offset, _length);
-
-	public unsafe Span<byte> Span => new Span<byte>(_ownedMemory!).Slice(_offset, _length);
-
-	public int Length => _length;
-
-	public static TrimmedMemory Create(int length)
-	{
-		return new TrimmedMemory(ArrayPool<byte>.Shared.Rent(length), 0, length);
-	}
-
-	public static TrimmedMemory Create(ReadOnlySpan<byte> span)
-	{
-		var result = Create(span.Length);
-		span.CopyTo(result.Span);
-		return result;
-	}
-
-	public static TrimmedMemory Create(ReadOnlySpan<char> value)
-	{
-		var result = Create(value.Length);
-		Encoding.Latin1.GetBytes(value, result.Span);
-		return result;
-	}
-
-	public TrimmedMemory Slice(int offset)
-	{
-		return new TrimmedMemory(_ownedMemory!, _offset + offset, _length - offset);
-	}
-
-	public TrimmedMemory Slice(int offset, int length)
-	{
-		return new TrimmedMemory(_ownedMemory!, _offset + offset, length);
-	}
+	public Memory<byte> Memory => new Memory<byte>(_ownedMemory).Slice(_offset, _length);
 
 	public void Dispose()
 	{
@@ -61,22 +28,37 @@ public readonly struct TrimmedMemory : IDisposable, IEquatable<TrimmedMemory>
 		}
 	}
 
+	public static bool operator ==(TrimmedMemory left, TrimmedMemory right)
+	{
+		return left.Equals(right);
+	}
+
+	public static bool operator !=(TrimmedMemory left, TrimmedMemory right)
+	{
+		return !(left == right);
+	}
+
+	public override bool Equals([NotNullWhen(true)] object? obj)
+	{
+		return obj is TrimmedMemory memory && Equals(memory);
+	}
+
 	public bool Equals(TrimmedMemory other)
 	{
 		if (_ownedMemory == default && other._ownedMemory == default) return true;
 		if (_ownedMemory == default || other._ownedMemory == default) return false;
-		return Span.SequenceEqual(other.Span);
+		return Memory.Span.SequenceEqual(other.Memory.Span);
 	}
 
 	public override int GetHashCode()
 	{
 		HashCode hashCode = new();
-		hashCode.AddBytes(Span);
+		hashCode.AddBytes(Memory.Span);
 		return hashCode.ToHashCode();
 	}
 
 	public override string ToString()
 	{
-		return Encoding.Latin1.GetString(Span);
+		return Encoding.Latin1.GetString(Memory.Span);
 	}
 }

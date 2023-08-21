@@ -7,7 +7,6 @@ User=p1monitor
 Group=p1monitor
 Type=notify
 ExecStart=/usr/lib/p1monitor/P1Monitor
-Environment=DOTNET_USE_POLLING_FILE_WATCHER=1
 
 [Install]
 WantedBy=multi-user.target

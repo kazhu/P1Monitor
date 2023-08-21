@@ -26,8 +26,8 @@ public partial class Program
 			.ConfigureAppConfiguration((hostingContext, config) =>
 			{
 				config.Sources.Clear(); // removing default configuration sources to get rid of the default AddJsonFile calls to avoid high CPU usage on Linux
-				AddConfigFile(config, configPath, "appsettings.json");
-				AddConfigFile(config, configPath, $"appsettings.{hostingContext.HostingEnvironment.EnvironmentName}.json");
+				config.AddJsonFile(Path.Combine(configPath, "appsettings.json"), optional: true, reloadOnChange: false);
+				config.AddJsonFile(Path.Combine(configPath, $"appsettings.{hostingContext.HostingEnvironment.EnvironmentName}.json"), optional: true, reloadOnChange: false);
 				config.AddEnvironmentVariables(prefix: "P1Monitor_");
 				config.AddCommandLine(args);
 			})
@@ -42,20 +42,12 @@ public partial class Program
 			{
 				services.Configure<InfluxDbOptions>(hostContext.Configuration.GetSection("InfluxDb"));
 				services.Configure<DsmrReaderOptions>(hostContext.Configuration.GetSection("DsmrReader"));
+				services.AddSingleton<DsmrParser>();
 				services.AddSingleton<IInfluxDbWriter, InfluxDbWriter>();
 				services.AddHostedService<DsmrReader>();
+				services.AddHostedService(provider => (InfluxDbWriter)provider.GetService<IInfluxDbWriter>()!);
 			})
 			.Build()
 			.RunAsync();
-	}
-
-	private static void AddConfigFile(IConfigurationBuilder config, string configPath, string fileName)
-	{
-		var path = Path.Combine(configPath, fileName);
-		if (File.Exists(path))
-		{
-			// Uses AddJsonStream instead of AddJsonFile, which yields usage of FileSystemWatcher indirectly, which causes high CPU usage on Linux
-			config.AddJsonStream(new MemoryStream(File.ReadAllBytes(path)));
-		}
 	}
 }

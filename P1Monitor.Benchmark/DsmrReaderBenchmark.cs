@@ -9,14 +9,16 @@ namespace P1Monitor.Benchmark;
 public class DsmrReaderBenchmark
 {
 	private readonly DsmrReaderOptions _options;
+	private readonly DsmrParser _dsmrParser;
 	private readonly DsmrReader _reader;
-	private readonly TrimmedMemory[] _lines;
+	private readonly byte[] _data;
 
 	public DsmrReaderBenchmark()
 	{
 		_options = new DsmrReaderOptions { Host = "localhost", Port = 2323 };
-		_reader = new DsmrReader(NullLogger<DsmrReader>.Instance, new NullInfluxDbWriter(), Options.Create(_options));
-		_lines = File.ReadAllLines("lines.txt", Encoding.Latin1).Select(x => TrimmedMemory.Create(Encoding.Latin1.GetBytes(x))).ToArray();
+		_dsmrParser = new DsmrParser(NullLogger<DsmrParser>.Instance);
+		_reader = new DsmrReader(NullLogger<DsmrReader>.Instance, new NullInfluxDbWriter(), _dsmrParser, Options.Create(_options));
+		_data = File.ReadAllBytes("lines.txt");
 	}
 
 	private class NullInfluxDbWriter : IInfluxDbWriter
@@ -28,11 +30,7 @@ public class DsmrReaderBenchmark
 	[Benchmark]
 	public void Test()
 	{
-		var state = DsmrReader.State.Starting;
-		foreach (var line in _lines)
-		{
-			state = _reader.ProcessLine(line.Span, state);
-		}
+		_reader.ProcessBuffer(_data);
 	}
 
 }

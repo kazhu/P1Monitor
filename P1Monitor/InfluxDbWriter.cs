@@ -1,4 +1,5 @@
-﻿using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Collections.Concurrent;
 using System.Globalization;
@@ -12,13 +13,13 @@ public interface IInfluxDbWriter
 	void Insert(P1Value[] values);
 }
 
-public class InfluxDbWriter : IInfluxDbWriter
+public class InfluxDbWriter : BackgroundService, IInfluxDbWriter
 {
 	private readonly ILogger<InfluxDbWriter> _logger;
 	private readonly InfluxDbOptions _options;
-	private readonly HttpClient _client = new HttpClient();
+	private readonly HttpClient _client = new();
 	private readonly string _requestUri;
-	private readonly MediaTypeHeaderValue _mediaTypeHeaderValue = new MediaTypeHeaderValue("text/plain", Encoding.UTF8.WebName);
+	private readonly MediaTypeHeaderValue _mediaTypeHeaderValue = new("text/plain", Encoding.UTF8.WebName);
 	private readonly BlockingCollection<TrimmedMemory> _blockingCollection = new();
 
 	public InfluxDbWriter(ILogger<InfluxDbWriter> logger, IOptions<InfluxDbOptions> options)
@@ -28,37 +29,49 @@ public class InfluxDbWriter : IInfluxDbWriter
 		_client.BaseAddress = new Uri(_options.BaseUrl);
 		_client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Token", _options.Token);
 		_requestUri = $"api/v2/write?org={_options.Organization}&bucket={_options.Bucket}&precision=s";
-		new Thread(InsertLines) { IsBackground = true }.Start();
 	}
 
-	private void InsertLines()
+	protected override Task ExecuteAsync(CancellationToken stoppingToken)
 	{
-		try
+		return Task.Run(() => Run(stoppingToken), stoppingToken);
+	}
+
+	private void Run(CancellationToken stoppingToken)
+	{
+		while (!stoppingToken.IsCancellationRequested)
 		{
-			foreach (var data in _blockingCollection.GetConsumingEnumerable())
+			try
 			{
-				using (data)
+				foreach (TrimmedMemory data in _blockingCollection.GetConsumingEnumerable(stoppingToken))
 				{
-					using ReadOnlyMemoryContent content = new ReadOnlyMemoryContent(data.Memory);
-					content.Headers.ContentType = _mediaTypeHeaderValue;
-					using var request = new HttpRequestMessage(HttpMethod.Post, _requestUri) { Content = content };
-					using HttpResponseMessage response = _client.Send(request);
-					if (!response.IsSuccessStatusCode)
+					using (data)
 					{
-						using var streamReader = new StreamReader(response.Content.ReadAsStream());
-						_logger.LogError("Error writing to InfluxDB: {StatusCode} {ReasonPhrase} {message}", response.StatusCode, response.ReasonPhrase, streamReader.ReadToEnd());
-					}
-					else
-					{
-						_logger.LogDebug("Wrote {Length} long values to InfluxDB", data.Length);
+						using var content = new ReadOnlyMemoryContent(data.Memory);
+						content.Headers.ContentType = _mediaTypeHeaderValue;
+						using var request = new HttpRequestMessage(HttpMethod.Post, _requestUri) { Content = content };
+						using HttpResponseMessage response = _client.Send(request, stoppingToken);
+						if (!response.IsSuccessStatusCode)
+						{
+							using var streamReader = new StreamReader(response.Content.ReadAsStream());
+							_logger.LogError("Error writing to InfluxDB: {StatusCode} {ReasonPhrase} {message}", response.StatusCode, response.ReasonPhrase, streamReader.ReadToEnd());
+						}
+						else
+						{
+							_logger.LogDebug("Wrote {Length} long values to InfluxDB", data.Memory.Length);
+						}
 					}
 				}
 			}
+			catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+			{
+				// Ignore, becase we are stopping
+			}
+			catch (Exception ex)
+			{
+				_logger.LogError(ex, "Error writing to InfluxDB");
+			}
 		}
-		catch (Exception ex) when (ex is not OperationCanceledException)
-		{
-			_logger.LogError(ex, "Error writing to InfluxDB");
-		}
+		_logger.LogInformation("InfluxDB writer stopped");
 	}
 
 
@@ -74,19 +87,19 @@ public class InfluxDbWriter : IInfluxDbWriter
 		P1Value timeValue = values[ObisMapping.MappingByFieldName["time"].Index];
 		foreach (var mappingGroup in ObisMapping.NumberMappingsByUnit)
 		{
-			span = span.Append("p1value"u8);
+			span = span.Append("p1value");
 			foreach (ObisMapping mapping in ObisMapping.Tags)
 			{
 				span = span
 					.Append(',')
 					.Append(mapping.FieldName)
 					.Append('=')
-					.Append(values[mapping.Index].Data.Span);
+					.Append(values[mapping.Index].Data);
 			}
 			if (mappingGroup.Key != nameof(P1Unit.None))
 			{
 				span = span
-					.Append(",unit="u8)
+					.Append(",unit=")
 					.Append(mappingGroup.Key)
 					.Append(' ');
 			}
@@ -106,7 +119,7 @@ public class InfluxDbWriter : IInfluxDbWriter
 				span = span
 					.Append(mapping.FieldName)
 					.Append('=')
-					.Append(values[mapping.Index].Data.Span);
+					.Append(values[mapping.Index].Data);
 			}
 
 			span = span
@@ -114,22 +127,24 @@ public class InfluxDbWriter : IInfluxDbWriter
 				.Append(timeValue.Time!.Value.ToUnixTimeSeconds())
 				.Append('\n');
 		}
-		return TrimmedMemory.Create(original.Slice(0, original.Length - span.Length));
+
+		ReadOnlySpan<byte> result = original[..^span.Length];
+		return new TrimmedMemory(result);
 	}
 }
 
 public static class SpanExtensions
 {
-	public static Span<byte> Append(this Span<byte> span, ReadOnlySpan<byte> value)
+	public static Span<byte> Append(this Span<byte> span, TrimmedMemory data)
 	{
-		value.CopyTo(span);
-		return span.Slice(value.Length);
+		data.Memory.Span.CopyTo(span);
+		return span[data.Memory.Length..];
 	}
 
 	public static Span<byte> Append(this Span<byte> span, char value)
 	{
 		span[0] = (byte)value;
-		return span.Slice(1);
+		return span[1..];
 	}
 
 	public static Span<byte> Append(this Span<byte> span, string value)
@@ -138,7 +153,7 @@ public static class SpanExtensions
 		{
 			span[i] = (byte)value[i];
 		}
-		return span.Slice(value.Length);
+		return span[value.Length..];
 	}
 
 	public static Span<byte> Append(this Span<byte> span, long data)
@@ -150,7 +165,7 @@ public static class SpanExtensions
 			{
 				span[i] = (byte)chars[i];
 			}
-			return span.Slice(written);
+			return span[written..];
 		}
 		return Append(span, data.ToString(CultureInfo.InvariantCulture));
 	}
