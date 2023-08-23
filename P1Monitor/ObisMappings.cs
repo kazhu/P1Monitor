@@ -27,12 +27,7 @@ public class ObisMappings : IObisMappings
 		Tags = mappings.Where(x => x.P1Type == DsmrType.String || x.P1Type == DsmrType.OnOff).OrderBy(x => x.FieldName).ToArray();
 		NumberMappingsByUnit = mappings.Where(x => x.P1Type == DsmrType.Number).GroupBy(x => x.Unit).Select(g => new UnitNumberMappings(g.Key.ToString(), g.OrderBy(x => x.FieldName).ToArray())).ToArray();
 		TimeField = mappings.FirstOrDefault(x => x.P1Type == DsmrType.Time);
-		_root = new TrieNode();
-		foreach (ObisMapping mapping in mappings)
-		{
-			_root.Add(Encoding.Latin1.GetBytes(mapping.Id), mapping);
-		}
-		_root.TrimMemory();
+		_root = new TrieNode(mappings);
 	}
 
 	public int Count { get; }
@@ -67,7 +62,18 @@ public class ObisMappings : IObisMappings
 		private TrieNode[] _children = new TrieNode[256];
 		private ObisMapping? _mapping;
 
-		public void Add(ReadOnlySpan<byte> span, ObisMapping mapping)
+		private TrieNode() { }
+
+		public TrieNode(IReadOnlyList<ObisMapping> mappings)
+		{
+			foreach (ObisMapping mapping in mappings)
+			{
+				Add(Encoding.Latin1.GetBytes(mapping.Id), mapping);
+			}
+			TrimMemory();
+		}
+
+		private void Add(ReadOnlySpan<byte> span, ObisMapping mapping)
 		{
 			if (span.Length > 0)
 			{
@@ -81,7 +87,7 @@ public class ObisMappings : IObisMappings
 			}
 		}
 
-		public void TrimMemory()
+		private void TrimMemory()
 		{
 			int i = 0;
 			while (i < _children.Length && _children[i] == null) i++;
