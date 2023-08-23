@@ -11,16 +11,10 @@ public class ModbusCrc
 			crc = (ushort)((crc >> 8) ^ CrcLookupTable[index]);
 		}
 
-		byte b3 = (byte)(crc & 0xF); crc >>= 4;
-		byte b2 = (byte)(crc & 0xF); crc >>= 4;
-		byte b1 = (byte)(crc & 0xF); crc >>= 4;
-		byte b0 = (byte)(crc & 0xF);
-
-		return crcText.Length == 4
-			&& crcText[3] == (byte)(b3 < 10 ? '0' + b3 : 'A' - 10 + b3)
-			&& crcText[2] == (byte)(b2 < 10 ? '0' + b2 : 'A' - 10 + b2)
-			&& crcText[1] == (byte)(b1 < 10 ? '0' + b1 : 'A' - 10 + b1)
-			&& crcText[0] == (byte)(b0 < 10 ? '0' + b0 : 'A' - 10 + b0);
+		Span<char> buffer = stackalloc char[4];
+		return crc.TryFormat(buffer, out int written, "X4")
+			&& written == 4 
+			&& (byte)buffer[0] == crcText[0] && (byte)buffer[1] == crcText[1] && (byte)buffer[2] == crcText[2] && (byte)buffer[3] == crcText[3];
 	}
 
 	private static readonly UInt16[] CrcLookupTable = new UInt16[]

@@ -1,5 +1,6 @@
 ﻿using System.Text;
 using System.Text.Json;
+using P1Monitor.Model;
 
 namespace P1Monitor.Tests;
 
@@ -7,12 +8,13 @@ namespace P1Monitor.Tests;
 public class DsmrParserTest
 {
 	private readonly TestLogger<DsmrParser> _logger;
+	private readonly IObisMappingsProvider _obisMappingProvider = new TestObisMappingsProvider();
 	private readonly DsmrParser _parser;
 
 	public DsmrParserTest()
 	{
 		_logger = new TestLogger<DsmrParser>();
-		_parser = new DsmrParser(_logger);
+		_parser = new DsmrParser(_logger, _obisMappingProvider);
 	}
 
 	[TestMethod]
@@ -28,15 +30,15 @@ public class DsmrParserTest
 
 		result = _parser.TryFindDataLines(ref buffer, out ReadOnlySpan<byte> dataLine2);
 		Assert.IsTrue(result);
-		Assert.AreEqual("", Encoding.Latin1.GetString(dataLine));
+		Assert.AreEqual("", Encoding.Latin1.GetString(dataLine2));
 		Assert.AreEqual("", Encoding.Latin1.GetString(buffer));
 
-		Assert.AreEqual("{\"Error\":[\"Dropped data before datagramm start: garbage\\r\\n\"]}", JsonSerializer.Serialize(_logger.Messages));
+		Assert.AreEqual("{\"Error\":[\"Dropped data before datagram start: garbage\\r\\n\"]}", JsonSerializer.Serialize(_logger.Messages));
 	}
 
 	[DataTestMethod]
 	[DataRow("/abc512\r\n\r\n\r\n!774B\r\n", "", "")]
-	[DataRow("garbage\r\n/abc512\r\n\r\n\r\n!774B\r\n", "", "", "{\"Information\":[\"Dropped data before datagramm start: garbage\\r\\n\"]}")]
+	[DataRow("garbage\r\n/abc512\r\n\r\n\r\n!774B\r\n", "", "", "{\"Information\":[\"Dropped data before datagram start: garbage\\r\\n\"]}")]
 	[DataRow("/abc512\r\n\r\ndataline1\r\ndataline2\r\n!12EC\r\n", "dataline1\r\ndataline2", "")]
 	[DataRow("/abc512\r\n\r\ndataline1\r\ndataline2\r\n!12EC\r\n/rem5ining\r\n\r\n\r\n!0000\r\n", "dataline1\r\ndataline2", "/rem5ining\r\n\r\n\r\n!0000\r\n")]
 	public void TestTryFindDataLinesHappy(string input, string expectedDataLine, string remaining, string expectedLog = "{}")
@@ -73,11 +75,11 @@ public class DsmrParserTest
 	}
 
 	[DataTestMethod]
-	[DataRow("garbage\r\n/", "/", "{\"Information\":[\"Dropped data before datagramm start: garbage\\r\\n\"]}")]
+	[DataRow("garbage\r\n/", "/", "{\"Information\":[\"Dropped data before datagram start: garbage\\r\\n\"]}")]
 	[DataRow("/abcx12\r\n\r\n", "\r\n", "{\"Error\":[\"Invalid identification line, dropped the line /abcx12\"]}")]
 	[DataRow("/abc512\r\nerror", "error", "{\"Error\":[\"Invalid identification line, dropped the line /abc512\"]}")]
 	[DataRow("/abc512\r\n\ra", "\ra", "{\"Error\":[\"Invalid identification line, dropped the line /abc512\"]}")]
-	[DataRow("/abc512\r\n\r\ndataline1\r\ndataline2\r\n!0000\r\n", "", "{\"Error\":[\"Invalid CRC, dropped the datagramm /abc512\\r\\n\\r\\ndataline1\\r\\ndataline2\\r\\n!0000\\r\\n\"]}")]
+	[DataRow("/abc512\r\n\r\ndataline1\r\ndataline2\r\n!0000\r\n", "", "{\"Error\":[\"Invalid CRC, dropped the datagram /abc512\\r\\n\\r\\ndataline1\\r\\ndataline2\\r\\n!0000\\r\\n\"]}")]
 	public void TestTryFindDataLinesFailures(string input, string remaining, string expectedLog)
 	{
 		ReadOnlySpan<byte> buffer = Encoding.Latin1.GetBytes(input);
@@ -147,21 +149,21 @@ public class DsmrParserTest
 	}
 
 	[DataTestMethod]
-	[DataRow("0", "0", P1Unit.None)]
-	[DataRow("0000", "0", P1Unit.None)]
-	[DataRow("4.2", "4.2", P1Unit.None)]
-	[DataRow("0042.4200", "42.42", P1Unit.None)]
-	[DataRow("0.42", "0.42", P1Unit.None)]
-	[DataRow("42.0", "42.0", P1Unit.None)]
-	[DataRow("42", "42", P1Unit.None)]
-	[DataRow("42*kWh", "42", P1Unit.kWh)]
-	[DataRow("42*kvarh", "42", P1Unit.kvarh)]
-	[DataRow("42*kW", "42", P1Unit.kW)]
-	[DataRow("42*kvar", "42", P1Unit.kvar)]
-	[DataRow("42*Hz", "42", P1Unit.Hz)]
-	[DataRow("42*V", "42", P1Unit.V)]
-	[DataRow("42*A", "42", P1Unit.A)]
-	public void TestTryParseNumber(string input, string expectedData, P1Unit unit)
+	[DataRow("0", "0", DsmrUnit.None)]
+	[DataRow("0000", "0", DsmrUnit.None)]
+	[DataRow("4.2", "4.2", DsmrUnit.None)]
+	[DataRow("0042.4200", "42.42", DsmrUnit.None)]
+	[DataRow("0.42", "0.42", DsmrUnit.None)]
+	[DataRow("42.0", "42.0", DsmrUnit.None)]
+	[DataRow("42", "42", DsmrUnit.None)]
+	[DataRow("42*kWh", "42", DsmrUnit.kWh)]
+	[DataRow("42*kvarh", "42", DsmrUnit.kvarh)]
+	[DataRow("42*kW", "42", DsmrUnit.kW)]
+	[DataRow("42*kvar", "42", DsmrUnit.kvar)]
+	[DataRow("42*Hz", "42", DsmrUnit.Hz)]
+	[DataRow("42*V", "42", DsmrUnit.V)]
+	[DataRow("42*A", "42", DsmrUnit.A)]
+	public void TestTryParseNumber(string input, string expectedData, DsmrUnit unit)
 	{
 		byte[] bytes = Encoding.Latin1.GetBytes(input);
 
@@ -171,15 +173,15 @@ public class DsmrParserTest
 	}
 
 	[DataTestMethod]
-	[DataRow("42", P1Unit.kW)]
-	[DataRow("42*kWh", P1Unit.kW)]
-	[DataRow("42*kvarh", P1Unit.kvar)]
-	[DataRow("42*kW", P1Unit.kWh)]
-	[DataRow("42*kvar", P1Unit.kvarh)]
-	[DataRow("42*Hz", P1Unit.A)]
-	[DataRow("42*V", P1Unit.A)]
-	[DataRow("42*A", P1Unit.V)]
-	public void TestTryParseNumberFailure(string input, P1Unit unit)
+	[DataRow("42", DsmrUnit.kW)]
+	[DataRow("42*kWh", DsmrUnit.kW)]
+	[DataRow("42*kvarh", DsmrUnit.kvar)]
+	[DataRow("42*kW", DsmrUnit.kWh)]
+	[DataRow("42*kvar", DsmrUnit.kvarh)]
+	[DataRow("42*Hz", DsmrUnit.A)]
+	[DataRow("42*V", DsmrUnit.A)]
+	[DataRow("42*A", DsmrUnit.V)]
+	public void TestTryParseNumberFailure(string input, DsmrUnit unit)
 	{
 		byte[] bytes = Encoding.Latin1.GetBytes(input);
 

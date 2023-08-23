@@ -1,0 +1,218 @@
+﻿{
+  "EON_HU_SX631": {
+    "country": "Hungary",
+    "providerName": "E.ON",
+    "source": "https://www.eon.hu/content/dam/eon/eon-hungary/documents/Muszaki-ugyek/Fogyasztasmerok-leirasa/sanxing-sx6x1/EON-leiras-az-ugyfelek-szamara-SX6X1-S12U16-S34U18-V010.pdf",
+    "mapping": {
+      "0-0:1.0.0": {
+        "fieldName": "time",
+        "type": "Time"
+      },
+      "0-0:42.0.0": {
+        "fieldName": "name",
+        "type": "String"
+      },
+      "0-0:96.1.0": {
+        "fieldName": "serial",
+        "type": "String"
+      },
+      "0-0:96.14.0": {
+        "fieldName": "tariff",
+        "type": "Number"
+      },
+      "0-0:96.50.68": {
+        "fieldName": "state",
+        "type": "OnOff"
+      },
+      "0-0:17.0.0": {
+        "fieldName": "limiter_limit",
+        "type": "Ignored"
+      },
+      "1-0:1.8.0": {
+        "fieldName": "import_energy",
+        "type": "Number",
+        "unit": "kWh"
+      },
+      "1-0:1.8.1": {
+        "fieldName": "import_energy_tariff_1",
+        "type": "Number",
+        "unit": "kWh"
+      },
+      "1-0:1.8.2": {
+        "fieldName": "import_energy_tariff_2",
+        "type": "Number",
+        "unit": "kWh"
+      },
+      "1-0:1.8.3": {
+        "fieldName": "import_energy_tariff_3",
+        "type": "Number",
+        "unit": "kWh"
+      },
+      "1-0:1.8.4": {
+        "fieldName": "import_energy_tariff_4",
+        "type": "Number",
+        "unit": "kWh"
+      },
+      "1-0:2.8.0": {
+        "fieldName": "export_energy",
+        "type": "Number",
+        "unit": "kWh"
+      },
+      "1-0:2.8.1": {
+        "fieldName": "export_energy_tariff_1",
+        "type": "Number",
+        "unit": "kWh"
+      },
+      "1-0:2.8.2": {
+        "fieldName": "export_energy_tariff_2",
+        "type": "Number",
+        "unit": "kWh"
+      },
+      "1-0:2.8.3": {
+        "fieldName": "export_energy_tariff_3",
+        "type": "Number",
+        "unit": "kWh"
+      },
+      "1-0:2.8.4": {
+        "fieldName": "export_energy_tariff_4",
+        "type": "Number",
+        "unit": "kWh"
+      },
+      "1-0:3.8.0": {
+        "fieldName": "import_reactive_energy",
+        "type": "Number",
+        "unit": "kvarh"
+      },
+      "1-0:4.8.0": {
+        "fieldName": "export_reactive_energy",
+        "type": "Number",
+        "unit": "kvarh"
+      },
+      "1-0:5.8.0": {
+        "fieldName": "reactive_energy_q1",
+        "type": "Number",
+        "unit": "kvarh"
+      },
+      "1-0:6.8.0": {
+        "fieldName": "reactive_energy_q2",
+        "type": "Number",
+        "unit": "kvarh"
+      },
+      "1-0:7.8.0": {
+        "fieldName": "reactive_energy_q3",
+        "type": "Number",
+        "unit": "kvarh"
+      },
+      "1-0:8.8.0": {
+        "fieldName": "reactive_energy_q4",
+        "type": "Number",
+        "unit": "kvarh"
+      },
+      "1-0:15.8.0": {
+        "fieldName": "energy_combined",
+        "type": "Ignored"
+      },
+      "1-0:32.7.0": {
+        "fieldName": "voltage_l1",
+        "type": "Number",
+        "unit": "V"
+      },
+      "1-0:52.7.0": {
+        "fieldName": "voltage_l2",
+        "type": "Number",
+        "unit": "V"
+      },
+      "1-0:72.7.0": {
+        "fieldName": "voltage_l3",
+        "type": "Number",
+        "unit": "V"
+      },
+      "1-0:31.7.0": {
+        "fieldName": "current_l1",
+        "type": "Number",
+        "unit": "A"
+      },
+      "1-0:51.7.0": {
+        "fieldName": "current_l2",
+        "type": "Number",
+        "unit": "A"
+      },
+      "1-0:71.7.0": {
+        "fieldName": "current_l3",
+        "type": "Number",
+        "unit": "A"
+      },
+      "1-0:13.7.0": {
+        "fieldName": "power_factor",
+        "type": "Number"
+      },
+      "1-0:33.7.0": {
+        "fieldName": "power_factor_l1",
+        "type": "Number"
+      },
+      "1-0:53.7.0": {
+        "fieldName": "power_factor_l2",
+        "type": "Number"
+      },
+      "1-0:73.7.0": {
+        "fieldName": "power_factor_l3",
+        "type": "Number"
+      },
+      "1-0:14.7.0": {
+        "fieldName": "frequency",
+        "type": "Number",
+        "unit": "Hz"
+      },
+      "1-0:1.7.0": {
+        "fieldName": "import_power",
+        "type": "Number",
+        "unit": "kW"
+      },
+      "1-0:2.7.0": {
+        "fieldName": "export_power",
+        "type": "Number",
+        "unit": "kW"
+      },
+      "1-0:5.7.0": {
+        "fieldName": "reactive_power_q1",
+        "type": "Number",
+        "unit": "kvar"
+      },
+      "1-0:6.7.0": {
+        "fieldName": "reactive_power_q2",
+        "type": "Number",
+        "unit": "kvar"
+      },
+      "1-0:7.7.0": {
+        "fieldName": "reactive_power_q3",
+        "type": "Number",
+        "unit": "kvar"
+      },
+      "1-0:8.7.0": {
+        "fieldName": "reactive_power_q4",
+        "type": "Number",
+        "unit": "kvar"
+      },
+      "1-0:31.4.0": {
+        "fieldName": "current_limit_l1",
+        "type": "Ignored"
+      },
+      "1-0:51.4.0": {
+        "fieldName": "current_limit_l2",
+        "type": "Ignored"
+      },
+      "1-0:71.4.0": {
+        "fieldName": "current_limit_l3",
+        "type": "Ignored"
+      },
+      "0-0:98.1.0": {
+        "fieldName": "previous_month",
+        "type": "Ignored"
+      },
+      "0-0:96.13.0": {
+        "fieldName": "message",
+        "type": "Ignored"
+      }
+    }
+  }
+}

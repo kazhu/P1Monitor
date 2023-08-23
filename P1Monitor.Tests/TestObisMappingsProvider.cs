@@ -1,55 +1,12 @@
-﻿using BenchmarkDotNet.Attributes;
-using Microsoft.Extensions.Logging.Abstractions;
-using P1Monitor.Model;
-using P1Monitor.Options;
-using OptionsFactory = Microsoft.Extensions.Options.Options;
+﻿using P1Monitor.Model;
 
-namespace P1Monitor.Benchmark;
+namespace P1Monitor.Tests;
 
-[MemoryDiagnoser]
-public class DsmrReaderBenchmark
+public class TestObisMappingsProvider : IObisMappingsProvider
 {
-	private readonly DsmrReaderOptions _options;
-	private readonly InfluxDbWriter _influxDbWriter;
-	private readonly DsmrParser _dsmrParser;
-	private readonly DsmrReader _reader;
-	private readonly byte[] _data;
-	private readonly P1Value[] _values;
-
-	public DsmrReaderBenchmark()
-	{
-		_options = new DsmrReaderOptions { Host = "localhost", Port = 2323 };
-		IObisMappingsProvider obisMappingProvider = new TestObisMappingsProvider();
-		_dsmrParser = new DsmrParser(NullLogger<DsmrParser>.Instance, obisMappingProvider);
-		_reader = new DsmrReader(NullLogger<DsmrReader>.Instance, new NullInfluxDbWriter(), _dsmrParser, obisMappingProvider, OptionsFactory.Create(_options));
-		_influxDbWriter = new InfluxDbWriter(NullLogger<InfluxDbWriter>.Instance, obisMappingProvider, OptionsFactory.Create(new InfluxDbOptions { BaseUrl = "http://localhost", Bucket = "b", Organization = "o", Token = "t" }));
-		_data = File.ReadAllBytes("lines.txt");
-		_values = new P1Value[obisMappingProvider.Mappings.Count];
-		for (int i = 0; i < _values.Length; i++)
+	private static readonly ObisMapping[] TestMappings =
+		new[]
 		{
-			var mapping = obisMappingProvider.Mappings[i];
-			switch (mapping.P1Type)
-			{
-				case DsmrType.Ignored:
-				case DsmrType.String:
-				case DsmrType.Number:
-					_values[i] = new P1Value(mapping, new TrimmedMemory("12"u8), true);
-					break;
-				case DsmrType.Time:
-					_values[i] = new P1Value(mapping, new TrimmedMemory("12"u8), true, DateTimeOffset.Now);
-					break;
-				case DsmrType.OnOff:
-					_values[i] = new P1Value(mapping, new TrimmedMemory("ON"u8), true);
-					break;
-			}
-		}
-	}
-
-	private class TestObisMappingsProvider : IObisMappingsProvider
-	{
-		private static readonly ObisMapping[] TestMappings =
-			new[]
-			{
 			new ObisMapping("0-0:1.0.0", "time", DsmrType.Time),
 			new ObisMapping("0-0:42.0.0", "name", DsmrType.String),
 			new ObisMapping("0-0:96.1.0", "serial", DsmrType.String),
@@ -95,29 +52,9 @@ public class DsmrReaderBenchmark
 			new ObisMapping("1-0:71.4.0", "current_limit_l3", DsmrType.Ignored),
 			new ObisMapping("0-0:98.1.0", "previous_month", DsmrType.Ignored),
 			new ObisMapping("0-0:96.13.0", "message", DsmrType.Ignored),
-			}
-			.Select((x, i) => x with { Index = i })
-			.ToArray();
+		}
+		.Select((x, i) => x with { Index = i })
+		.ToArray();
 
-		public IObisMappings Mappings { get; } = new ObisMappings(TestMappings);
-	}
-
-	private class NullInfluxDbWriter : IInfluxDbWriter
-	{
-		public void Insert(P1Value[] values) { }
-	}
-
-
-	[Benchmark]
-	public void ProcessBuffer()
-	{
-		_reader.ProcessBuffer(_data);
-	}
-
-	[Benchmark]
-	public void GenerateLines()
-	{
-		TrimmedMemory data = _influxDbWriter.GenerateLines(_values);
-		data.Dispose();
-	}
+	public IObisMappings Mappings { get; } = new ObisMappings(TestMappings);
 }

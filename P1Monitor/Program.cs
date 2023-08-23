@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Hosting.Systemd;
 using Microsoft.Extensions.Logging;
+using P1Monitor.Options;
 using System.Diagnostics;
 
 namespace P1Monitor;
@@ -18,7 +19,7 @@ public partial class Program
 		}
 		else
 		{
-			configPath = Path.GetDirectoryName(Process.GetCurrentProcess().MainModule!.FileName)!;
+			configPath = Path.GetDirectoryName(Environment.ProcessPath)!;
 		}
 
 		await Host.CreateDefaultBuilder(args)
@@ -40,10 +41,14 @@ public partial class Program
 			})
 			.ConfigureServices((hostContext, services) =>
 			{
-				services.Configure<InfluxDbOptions>(hostContext.Configuration.GetSection("InfluxDb"));
 				services.Configure<DsmrReaderOptions>(hostContext.Configuration.GetSection("DsmrReader"));
-				services.AddSingleton<DsmrParser>();
+				services.Configure<InfluxDbOptions>(hostContext.Configuration.GetSection("InfluxDb"));
+				services.Configure<ObisMappingsOptions>(hostContext.Configuration.GetSection("ObisMapping"));
+
+				services.AddSingleton<IDsmrParser, DsmrParser>();
 				services.AddSingleton<IInfluxDbWriter, InfluxDbWriter>();
+				services.AddSingleton<IObisMappingsProvider, ObisMappingsProvider>();
+
 				services.AddHostedService<DsmrReader>();
 				services.AddHostedService(provider => (InfluxDbWriter)provider.GetService<IInfluxDbWriter>()!);
 			})

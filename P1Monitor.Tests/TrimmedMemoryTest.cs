@@ -1,23 +1,10 @@
 ﻿using System.Text;
-using System.Text.Json;
-using System.Text.Json.Serialization;
 
 namespace P1Monitor.Tests;
 
 [TestClass]
 public class TrimmedMemoryTest
 {
-
-	[TestMethod]
-	public void DoIt()
-	{
-		JsonSerializerOptions options = new JsonSerializerOptions { WriteIndented = true, Converters = { new JsonStringEnumConverter() }, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingDefault };
-		File.WriteAllText(
-			@"c:\Users\kaz\Downloads\data.json",
-			JsonSerializer.Serialize(ObisMapping.Mappings.ToDictionary(x => Encoding.Latin1.GetString(x.Id.Memory.Span), x => new { x.FieldName, Type = x.P1Type, x.Unit }), options)
-		); 
-	}
-
 	[TestMethod]
 	public void TestEquals()
 	{

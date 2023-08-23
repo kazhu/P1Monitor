@@ -20,7 +20,7 @@ public readonly struct TrimmedMemory : IDisposable, IEquatable<TrimmedMemory>
 
 	public Memory<byte> Memory => new Memory<byte>(_ownedMemory).Slice(_offset, _length);
 
-	public void Dispose()
+	public readonly void Dispose()
 	{
 		if (_ownedMemory != default)
 		{

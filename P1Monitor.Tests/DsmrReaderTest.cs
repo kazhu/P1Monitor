@@ -1,8 +1,10 @@
 ﻿using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
+using P1Monitor.Model;
+using P1Monitor.Options;
 using System.Text;
 using System.Text.Json;
+using OptionsFactory = Microsoft.Extensions.Options.Options;
 
 namespace P1Monitor.Tests;
 
@@ -11,14 +13,15 @@ public class DsmrReaderTest
 {
 	private readonly TestLogger<DsmrReader> _logger = new();
 	private readonly TestInfluxDbWriter _influxDbWriter = new();
-	private readonly IOptions<DsmrReaderOptions> _options = Options.Create(new DsmrReaderOptions { Host = "localhost", Port = 2323 });
+	private readonly DsmrReaderOptions _options = new() { Host = "localhost", Port = 2323 };
+	private readonly IObisMappingsProvider _obisMappingProvider = new TestObisMappingsProvider();
 	private readonly DsmrParser _parser;
 	private readonly DsmrReader _reader;
 
 	public DsmrReaderTest()
 	{
-		_parser = new DsmrParser(NullLogger<DsmrParser>.Instance);
-		_reader = new DsmrReader(_logger, _influxDbWriter, _parser, _options);
+		_parser = new DsmrParser(NullLogger<DsmrParser>.Instance, _obisMappingProvider);
+		_reader = new DsmrReader(_logger, _influxDbWriter, _parser, _obisMappingProvider, OptionsFactory.Create(_options));
 	}
 
 	private const string SampleDatagram =
@@ -85,12 +88,11 @@ public class DsmrReaderTest
 		Assert.AreEqual(1, _influxDbWriter.Values.Count);
 
 		var values = _influxDbWriter.Values[0];
-		Assert.AreEqual(ObisMapping.Mappings.Length, values.Length);
-		for (int i = 0; i < ObisMapping.Mappings.Length; i++)
+		Assert.AreEqual(_obisMappingProvider.Mappings.Count, values.Length);
+		foreach (ObisMapping mapping in _obisMappingProvider.Mappings)
 		{
-			var mapping = ObisMapping.Mappings[i];
 			string data = Encoding.Latin1.GetString(values[mapping.Index].Data.Memory.Span);
-			if (mapping.P1Type == P1Type.Number && mapping.Unit != P1Unit.None)
+			if (mapping.P1Type == DsmrType.Number && mapping.Unit != DsmrUnit.None)
 			{
 				data += "/" + mapping.Unit;
 			}
@@ -145,7 +147,7 @@ public class DsmrReaderTest
 			};
 			if (expectedValue != "")
 			{
-				Assert.AreEqual(expectedValue, data, $"Field {Encoding.Latin1.GetString(mapping.Id.Memory.Span)}/{mapping.FieldName} is different");
+				Assert.AreEqual(expectedValue, data, $"Field {mapping.Id}/{mapping.FieldName} is different");
 			}
 		}
 

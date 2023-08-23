@@ -1,6 +1,9 @@
 ﻿using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using P1Monitor.Model;
+using P1Monitor.Options;
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Net.Http.Headers;
@@ -16,19 +19,26 @@ public interface IInfluxDbWriter
 public class InfluxDbWriter : BackgroundService, IInfluxDbWriter
 {
 	private readonly ILogger<InfluxDbWriter> _logger;
+	private readonly IObisMappingsProvider _obisMappingProvider;
 	private readonly InfluxDbOptions _options;
 	private readonly HttpClient _client = new();
 	private readonly string _requestUri;
 	private readonly MediaTypeHeaderValue _mediaTypeHeaderValue = new("text/plain", Encoding.UTF8.WebName);
 	private readonly BlockingCollection<TrimmedMemory> _blockingCollection = new();
 
-	public InfluxDbWriter(ILogger<InfluxDbWriter> logger, IOptions<InfluxDbOptions> options)
+	public InfluxDbWriter(ILogger<InfluxDbWriter> logger, IObisMappingsProvider obisMappingProvider, IOptions<InfluxDbOptions> options)
 	{
 		_logger = logger;
+		_obisMappingProvider = obisMappingProvider;
 		_options = options.Value;
 		_client.BaseAddress = new Uri(_options.BaseUrl);
 		_client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Token", _options.Token);
 		_requestUri = $"api/v2/write?org={_options.Organization}&bucket={_options.Bucket}&precision=s";
+	}
+
+	public void Insert(P1Value[] values)
+	{
+		_blockingCollection.Add(GenerateLines(values));
 	}
 
 	protected override Task ExecuteAsync(CancellationToken stoppingToken)
@@ -52,7 +62,7 @@ public class InfluxDbWriter : BackgroundService, IInfluxDbWriter
 						using HttpResponseMessage response = _client.Send(request, stoppingToken);
 						if (!response.IsSuccessStatusCode)
 						{
-							using var streamReader = new StreamReader(response.Content.ReadAsStream());
+							using var streamReader = new StreamReader(response.Content.ReadAsStream(stoppingToken));
 							_logger.LogError("Error writing to InfluxDB: {StatusCode} {ReasonPhrase} {message}", response.StatusCode, response.ReasonPhrase, streamReader.ReadToEnd());
 						}
 						else
@@ -74,21 +84,48 @@ public class InfluxDbWriter : BackgroundService, IInfluxDbWriter
 		_logger.LogInformation("InfluxDB writer stopped");
 	}
 
-
-	public void Insert(P1Value[] values)
+	internal TrimmedMemory GenerateLines(P1Value[] values)
 	{
-		_blockingCollection.Add(GenerateLines(values));
+		int length = CalculateLength(values);
+		byte[] buffer = ArrayPool<byte>.Shared.Rent(length);
+		try
+		{
+			ReadOnlySpan<byte> result = WriteValues(values, buffer);
+			return new TrimmedMemory(result);
+		}
+		finally
+		{
+			ArrayPool<byte>.Shared.Return(buffer);
+		}
 	}
 
-	private static TrimmedMemory GenerateLines(P1Value[] values)
+	private int CalculateLength(P1Value[] values)
 	{
-		Span<byte> span = stackalloc byte[4096]; // 4096 is more than enough to hold all lines
-		Span<byte> original = span;
-		P1Value timeValue = values[ObisMapping.MappingByFieldName["time"].Index];
-		foreach (var mappingGroup in ObisMapping.NumberMappingsByUnit)
+		int length = 0;
+		foreach (UnitNumberMappings unitNumberMappings in _obisMappingProvider.Mappings.NumberMappingsByUnit)
+		{
+			length += ("p1value" + ",unit=" + " " + " " + "\n").Length + 10/*epoch seconds*/ + unitNumberMappings.Unit.Length;
+			foreach (ObisMapping mapping in _obisMappingProvider.Mappings.Tags)
+			{
+				length += mapping.FieldName.Length + values[mapping.Index].Data.Memory.Span.Length + 2;
+			}
+			foreach (ObisMapping mapping in unitNumberMappings.Mappings)
+			{
+				length += mapping.FieldName.Length + values[mapping.Index].Data.Memory.Span.Length + 2;
+			}
+		}
+
+		return length;
+	}
+
+	private ReadOnlySpan<byte> WriteValues(P1Value[] values, Span<byte> buffer)
+	{
+		DateTimeOffset time = (_obisMappingProvider.Mappings.TimeField is null ? null : values[_obisMappingProvider.Mappings.TimeField.Index].Time) ?? DateTimeOffset.Now;
+		Span<byte> span = buffer;
+		foreach (UnitNumberMappings unitNumberMappings in _obisMappingProvider.Mappings.NumberMappingsByUnit)
 		{
 			span = span.Append("p1value");
-			foreach (ObisMapping mapping in ObisMapping.Tags)
+			foreach (ObisMapping mapping in _obisMappingProvider.Mappings.Tags)
 			{
 				span = span
 					.Append(',')
@@ -96,17 +133,16 @@ public class InfluxDbWriter : BackgroundService, IInfluxDbWriter
 					.Append('=')
 					.Append(values[mapping.Index].Data);
 			}
-			if (mappingGroup.Key != nameof(P1Unit.None))
+			if (unitNumberMappings.Unit != nameof(DsmrUnit.None))
 			{
 				span = span
 					.Append(",unit=")
-					.Append(mappingGroup.Key)
-					.Append(' ');
+					.Append(unitNumberMappings.Unit);
 			}
 			span = span.Append(' ');
 
 			bool isFirst = true;
-			foreach (ObisMapping mapping in mappingGroup.Value)
+			foreach (ObisMapping mapping in unitNumberMappings.Mappings)
 			{
 				if (isFirst)
 				{
@@ -124,12 +160,11 @@ public class InfluxDbWriter : BackgroundService, IInfluxDbWriter
 
 			span = span
 				.Append(' ')
-				.Append(timeValue.Time!.Value.ToUnixTimeSeconds())
+				.Append(time.ToUnixTimeSeconds())
 				.Append('\n');
 		}
 
-		ReadOnlySpan<byte> result = original[..^span.Length];
-		return new TrimmedMemory(result);
+		return buffer[..^span.Length];
 	}
 }
 

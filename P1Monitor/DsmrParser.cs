@@ -1,17 +1,26 @@
 ﻿using Microsoft.Extensions.Logging;
+using P1Monitor.Model;
 using System.Text;
 
 namespace P1Monitor;
 
-public class DsmrParser
+public interface IDsmrParser
+{
+	bool TryFindDataLines(ref ReadOnlySpan<byte> buffer, out ReadOnlySpan<byte> dataLines);
+	bool TryParseDataLine(ref ReadOnlySpan<byte> buffer, out P1Value value);
+}
+
+public class DsmrParser : IDsmrParser
 {
 	private static readonly Encoding _encoding = Encoding.Latin1;
 	private readonly ILogger<DsmrParser> _logger;
+	private readonly IObisMappingsProvider _obisMappingProvider;
 	private bool isFirstDatagram = true;
 
-	public DsmrParser(ILogger<DsmrParser> logger)
+	public DsmrParser(ILogger<DsmrParser> logger, IObisMappingsProvider obisMappingProvider)
 	{
 		_logger = logger;
+		_obisMappingProvider = obisMappingProvider;
 	}
 
 	// looking for /XXX5<identification>\r\n\r\n<dataLines>\r\n!<crc>\r\n where data lines are separated by \r\n and cannot contain \r\n
@@ -27,11 +36,11 @@ public class DsmrParser
 			if (packetStartIndex < 0) return false;
 			if (isFirstDatagram)
 			{
-				_logger.LogInformation("Dropped data before datagramm start: {Data}", _encoding.GetString(buffer[..(packetStartIndex + 2)]));
+				_logger.LogInformation("Dropped data before datagram start: {Data}", _encoding.GetString(buffer[..(packetStartIndex + 2)]));
 			}
 			else
 			{
-				_logger.LogError("Dropped data before datagramm start: {Data}", _encoding.GetString(buffer[..(packetStartIndex + 2)]));
+				_logger.LogError("Dropped data before datagram start: {Data}", _encoding.GetString(buffer[..(packetStartIndex + 2)]));
 			}
 			buffer = buffer[(packetStartIndex + 2)..];
 		}
@@ -64,7 +73,7 @@ public class DsmrParser
 		}
 
 		// invalid crc
-		_logger.LogError("Invalid CRC, dropped the datagramm {Datagramm}", _encoding.GetString(buffer[..(index + 6)]));
+		_logger.LogError("Invalid CRC, dropped the datagram {Datagram}", _encoding.GetString(buffer[..(index + 6)]));
 		buffer = buffer[(index + 6)..];
 		return false;
 	}
@@ -92,23 +101,22 @@ public class DsmrParser
 			return false;
 		}
 
-		using var id = new TrimmedMemory(line[..index]);
-		if (!ObisMapping.MappingById.TryGetValue(id, out ObisMapping? mapping))
+		if (!_obisMappingProvider.Mappings.TryGetMappingById(line[..index], out ObisMapping? mapping))
 		{
 			_logger.LogWarning("{Line}: unknown obis id, line dropped", _encoding.GetString(line));
 			return false;
 		}
 
 		var valueSpan = line.Slice(index + 1, line.Length - index - 2);
-		P1Value p1Value = mapping.P1Type switch
+		P1Value p1Value = mapping!.P1Type switch
 		{
-			P1Type.NotNeeded => new P1Value { Mapping = mapping, Data = new TrimmedMemory(valueSpan), IsValid = true, Time = null },
-			P1Type.String => new P1Value { Mapping = mapping, Data = new TrimmedMemory(valueSpan), IsValid = valueSpan.Length <= 32, Time = null },
-			P1Type.Number => TryParseNumber(valueSpan, mapping.Unit, out var number)
-				? new P1Value { Mapping = mapping, Data = new TrimmedMemory(number), IsValid = true, Time = null }
-				: new P1Value { Mapping = mapping, Data = new TrimmedMemory(valueSpan), IsValid = false, Time = null },
-			P1Type.Time => new P1Value { Mapping = mapping, Data = new TrimmedMemory(valueSpan), IsValid = TryParseTime(valueSpan, out var time), Time = time },
-			P1Type.OnOff => new P1Value { Mapping = mapping, Data = new TrimmedMemory(valueSpan), IsValid = IsOnOff(valueSpan), Time = null },
+			DsmrType.Ignored => new P1Value(mapping, new TrimmedMemory(valueSpan), true),
+			DsmrType.String => new P1Value(mapping, new TrimmedMemory(valueSpan), valueSpan.Length <= 32),
+			DsmrType.Number => TryParseNumber(valueSpan, mapping.Unit, out var number)
+				? new P1Value(mapping, new TrimmedMemory(number), true)
+				: new P1Value(mapping, new TrimmedMemory(valueSpan), false),
+			DsmrType.Time => new P1Value(mapping, new TrimmedMemory(valueSpan), TryParseTime(valueSpan, out var time), Time: time),
+			DsmrType.OnOff => new P1Value(mapping, new TrimmedMemory(valueSpan), IsOnOff(valueSpan)),
 			_ => throw new NotImplementedException(),
 		};
 		if (!p1Value.IsValid)
@@ -122,20 +130,20 @@ public class DsmrParser
 		return true;
 	}
 
-	public static bool TryParseNumber(ReadOnlySpan<byte> span, P1Unit unit, out ReadOnlySpan<byte> number)
+	public static bool TryParseNumber(ReadOnlySpan<byte> span, DsmrUnit unit, out ReadOnlySpan<byte> number)
 	{
 		int separatorIndex = span.IndexOf((byte)'*');
 		if (separatorIndex >= 0)
 		{
 			ReadOnlySpan<byte> expectedUnitText = unit switch
 			{
-				P1Unit.kWh => "*kWh"u8,
-				P1Unit.kvarh => "*kvarh"u8,
-				P1Unit.kW => "*kW"u8,
-				P1Unit.kvar => "*kvar"u8,
-				P1Unit.Hz => "*Hz"u8,
-				P1Unit.V => "*V"u8,
-				P1Unit.A => "*A"u8,
+				DsmrUnit.kWh => "*kWh"u8,
+				DsmrUnit.kvarh => "*kvarh"u8,
+				DsmrUnit.kW => "*kW"u8,
+				DsmrUnit.kvar => "*kvar"u8,
+				DsmrUnit.Hz => "*Hz"u8,
+				DsmrUnit.V => "*V"u8,
+				DsmrUnit.A => "*A"u8,
 				_ => Span<byte>.Empty,
 			};
 			if (!span[separatorIndex..].SequenceEqual(expectedUnitText))
@@ -147,7 +155,7 @@ public class DsmrParser
 		}
 		else
 		{
-			if (unit != P1Unit.None)
+			if (unit != DsmrUnit.None)
 			{
 				number = default;
 				return false;

@@ -1,6 +1,7 @@
 ﻿using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using P1Monitor.Options;
 using System.Net.Sockets;
 using System.Text;
 
@@ -12,17 +13,20 @@ public partial class DsmrReader : BackgroundService
 
 	private readonly ILogger<DsmrReader> _logger;
 	private readonly IInfluxDbWriter _influxDbWriter;
-	private readonly DsmrParser _dsmrParser;
+	private readonly IDsmrParser _dsmrParser;
+	private readonly IObisMappingsProvider _obisMappingProvider;
 	private readonly DsmrReaderOptions _options;
-	private readonly P1Value[] _values = new P1Value[ObisMapping.Mappings.Length];
+	private readonly P1Value[] _values;
 	private Socket? _socket = null!;
 
-	public DsmrReader(ILogger<DsmrReader> logger, IInfluxDbWriter influxDbWriter, DsmrParser dsmrParser, IOptions<DsmrReaderOptions> options)
+	public DsmrReader(ILogger<DsmrReader> logger, IInfluxDbWriter influxDbWriter, IDsmrParser dsmrParser, IObisMappingsProvider obisMappingProvider, IOptions<DsmrReaderOptions> options)
 	{
 		_logger = logger;
 		_influxDbWriter = influxDbWriter;
 		_dsmrParser = dsmrParser;
+		_obisMappingProvider = obisMappingProvider;
 		_options = options.Value;
+		_values = new P1Value[_obisMappingProvider.Mappings.Count];
 	}
 
 	protected override Task ExecuteAsync(CancellationToken stoppingToken)
@@ -39,7 +43,7 @@ public partial class DsmrReader : BackgroundService
 
 	private void Run(CancellationToken stoppingToken)
 	{
-		Span<byte> buffer = stackalloc byte[4096];
+		Span<byte> buffer = _options.BufferSize <= 4096 ? stackalloc byte[_options.BufferSize] : new byte[_options.BufferSize];
 		while (!stoppingToken.IsCancellationRequested)
 		{
 			try
@@ -124,7 +128,7 @@ public partial class DsmrReader : BackgroundService
 		{
 			if (_values[i].IsEmpty)
 			{
-				_logger.LogError("{Id} is missing, dropping all values", _encoding.GetString(ObisMapping.Mappings[i].Id.Memory.Span));
+				_logger.LogError("{Id} is missing, dropping all values", _obisMappingProvider.Mappings[i].Id);
 				hasError = true;
 			}
 		}
@@ -133,7 +137,7 @@ public partial class DsmrReader : BackgroundService
 		{
 			if (_logger.IsEnabled(LogLevel.Debug))
 			{
-				_logger.LogDebug("Enqueuing values for {Time}", _values[ObisMapping.MappingByFieldName["time"].Index].Time);
+				_logger.LogDebug("Enqueuing values for {Time}", (_obisMappingProvider.Mappings.TimeField is null ? null : _values[_obisMappingProvider.Mappings.TimeField.Index].Time) ?? DateTimeOffset.Now);
 			}
 			_influxDbWriter.Insert(_values);
 		}
