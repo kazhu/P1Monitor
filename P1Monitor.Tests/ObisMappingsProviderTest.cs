@@ -37,7 +37,7 @@ public class ObisMappingsProviderTest
 		{
 			var options = new ObisMappingsOptions { DeviceName = DeviceName, MappingFile = Filename };
 
-			IObisMappings data = new ObisMappingsProvider(NullLogger<ObisMappingsProvider>.Instance, OptionsFactory.Create(options)).Mappings;
+			ObisMappingList data = new ObisMappingsProvider(NullLogger<ObisMappingsProvider>.Instance, OptionsFactory.Create(options)).Mappings;
 
 			ValidateData(data);
 		}
@@ -57,7 +57,7 @@ public class ObisMappingsProviderTest
 		{
 			var options = new ObisMappingsOptions { DeviceName = DeviceName, MappingFile = Filename };
 
-			IObisMappings data = new ObisMappingsProvider(NullLogger<ObisMappingsProvider>.Instance, OptionsFactory.Create(options)).Mappings;
+			ObisMappingList data = new ObisMappingsProvider(NullLogger<ObisMappingsProvider>.Instance, OptionsFactory.Create(options)).Mappings;
 
 			ValidateData(data);
 		}
@@ -67,7 +67,7 @@ public class ObisMappingsProviderTest
 		}
 	}
 
-	private static void ValidateData(IObisMappings data)
+	private static void ValidateData(ObisMappingList data)
 	{
 		Assert.AreEqual(1, data.Count);
 		Assert.AreEqual("0-0:1.0.0", data[0].Id);

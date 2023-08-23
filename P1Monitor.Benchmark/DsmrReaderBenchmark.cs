@@ -99,7 +99,7 @@ public class DsmrReaderBenchmark
 			.Select((x, i) => x with { Index = i })
 			.ToArray();
 
-		public IObisMappings Mappings { get; } = new ObisMappings(TestMappings);
+		public ObisMappingList Mappings { get; } = new ObisMappingList(TestMappings);
 	}
 
 	private class NullInfluxDbWriter : IInfluxDbWriter

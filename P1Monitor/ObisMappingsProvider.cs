@@ -9,7 +9,7 @@ namespace P1Monitor;
 
 public interface IObisMappingsProvider
 {
-	IObisMappings Mappings { get; }
+	ObisMappingList Mappings { get; }
 }
 
 public class ObisMappingsProvider : IObisMappingsProvider
@@ -17,16 +17,16 @@ public class ObisMappingsProvider : IObisMappingsProvider
 	private static readonly JsonSerializerOptions Options = new() { Converters = { new JsonStringEnumConverter() }, PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 	private readonly ILogger<ObisMappingsProvider> _logger;
 	private readonly ObisMappingsOptions _options;
-	private readonly Lazy<IObisMappings> _mappings;
+	private readonly Lazy<ObisMappingList> _mappings;
 
 	public ObisMappingsProvider(ILogger<ObisMappingsProvider> logger, IOptions<ObisMappingsOptions> options)
 	{
 		_logger = logger;
 		_options = options.Value;
-		_mappings = new Lazy<IObisMappings>(CreateMapping, true);
+		_mappings = new Lazy<ObisMappingList>(CreateMapping, true);
 	}
 
-	private IObisMappings CreateMapping()
+	private ObisMappingList CreateMapping()
 	{
 		string filePath = _options.MappingFile;
 		if (!Path.IsPathRooted(filePath))
@@ -39,8 +39,8 @@ public class ObisMappingsProvider : IObisMappingsProvider
 		Dictionary<string, DeviceMappingDescriptor> mappings = JsonSerializer.Deserialize<Dictionary<string, DeviceMappingDescriptor>>(json, Options)!;
 		DeviceMappingDescriptor mapping = mappings[_options.DeviceName];
 		_logger.LogInformation("Using {Device} device mappings", _options.DeviceName);
-		return new ObisMappings(mapping.Mapping.Select(x => new ObisMapping(x.Key, x.Value.FieldName, x.Value.Type, x.Value.Unit)).ToList());
+		return new ObisMappingList(mapping.Mapping.Select(x => new ObisMapping(x.Key, x.Value.FieldName, x.Value.Type, x.Value.Unit)).ToList());
 	}
 
-	public IObisMappings Mappings => _mappings.Value;
+	public ObisMappingList Mappings => _mappings.Value;
 }

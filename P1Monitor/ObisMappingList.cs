@@ -4,23 +4,14 @@ using P1Monitor.Model;
 
 namespace P1Monitor;
 
-public interface IObisMappings : IReadOnlyList<ObisMapping>
-{
-	UnitNumberMappings[] NumberMappingsByUnit { get; }
-	ObisMapping[] Tags { get; }
-	ObisMapping? TimeField { get; }
-
-	bool TryGetMappingById(ReadOnlySpan<byte> id, out ObisMapping? mapping);
-}
-
 public record class UnitNumberMappings(string Unit, ObisMapping[] Mappings);
 
-public class ObisMappings : IObisMappings
+public class ObisMappingList : IReadOnlyList<ObisMapping>
 {
 	private readonly IReadOnlyList<ObisMapping> _mappings;
 	private readonly TrieNode _root;
 
-	public ObisMappings(IReadOnlyList<ObisMapping> mappings)
+	public ObisMappingList(IReadOnlyList<ObisMapping> mappings)
 	{
 		_mappings = mappings;
 		Count = mappings.Count;
