@@ -1,6 +1,6 @@
 ﻿namespace P1Monitor;
 
-public class ModbusCrc
+public class DsmrCrc
 {
 	public static bool CheckCrc(ReadOnlySpan<byte> data, ReadOnlySpan<byte> crcText)
 	{

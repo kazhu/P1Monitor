@@ -4,7 +4,7 @@ namespace P1Monitor.Tests;
 
 public class TestObisMappingsProvider : IObisMappingsProvider
 {
-	private static readonly ObisMapping[] TestMappings =
+	public static readonly ObisMapping[] TestMappings =
 		new[]
 		{
 			new ObisMapping("0-0:1.0.0", "time", DsmrType.Time),

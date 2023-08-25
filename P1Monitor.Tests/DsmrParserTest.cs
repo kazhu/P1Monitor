@@ -1,5 +1,6 @@
 ﻿using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using P1Monitor.Model;
 
 namespace P1Monitor.Tests;
@@ -10,11 +11,17 @@ public class DsmrParserTest
 	private readonly TestLogger<DsmrParser> _logger;
 	private readonly IObisMappingsProvider _obisMappingProvider = new TestObisMappingsProvider();
 	private readonly DsmrParser _parser;
+	private readonly DsmrValue[] _values;
 
 	public DsmrParserTest()
 	{
 		_logger = new TestLogger<DsmrParser>();
 		_parser = new DsmrParser(_logger, _obisMappingProvider);
+		_values = new DsmrValue[_obisMappingProvider.Mappings.Count];
+		foreach (ObisMapping mapping in _obisMappingProvider.Mappings)
+		{
+			_values[mapping.Index] = DsmrValue.Create(mapping);
+		}
 	}
 
 	[TestMethod]
@@ -93,39 +100,50 @@ public class DsmrParserTest
 	}
 
 	[DataTestMethod]
-	[DataRow("0-0:1.0.0(230817171430S)", "230817171430S", "time", "2023-08-17T17:14:30.0000000")]
-	[DataRow("0-0:1.0.0(230817171430S)\r\n", "230817171430S", "time", "2023-08-17T17:14:30.0000000")]
-	[DataRow("0-0:1.0.0(230817171430S)\r\nremaining", "230817171430S", "time", "2023-08-17T17:14:30.0000000", "remaining")]
-	[DataRow("0-0:42.0.0(AUX1030303218166)", "AUX1030303218166", "name")]
-	[DataRow("0-0:96.50.68(ON)", "ON", "state")]
-	[DataRow("0-0:96.14.0(0001)", "1", "tariff")]
-	[DataRow("0-0:96.14.0(0000)", "0", "tariff")]
-	[DataRow("1-0:1.8.0(000812.421*kWh)", "812.421", "import_energy")]
-	[DataRow("1-0:3.8.0(000018.858*kvarh)", "18.858", "import_reactive_energy")]
-	[DataRow("1-0:32.7.0(234.0*V)", "234.0", "voltage_l1")]
-	[DataRow("1-0:31.7.0(001*A)", "1", "current_l1")]
-	[DataRow("1-0:13.7.0(0.336)", "0.336", "power_factor")]
-	[DataRow("1-0:14.7.0(49.99*Hz)", "49.99", "frequency")]
-	[DataRow("1-0:1.7.0(00.250*kW)", "0.25", "import_power")]
-	[DataRow("1-0:5.7.0(00.000*kvar)", "0.0", "reactive_power_q1")]
-	[DataRow("0-0:98.1.0(230801000000S)(000663.924*kWh)", "230801000000S)(000663.924*kWh", "previous_month")]
-	public void TestTryParseDataLine(string input, string expectedValue, string fieldName, string? expectedTime = null, string remaining = "")
+	[DataRow("0-0:1.0.0(230817171430S)", "time", "2023-08-17T17:14:30.0000000")]
+	[DataRow("0-0:1.0.0(230817171430S)\r\n", "time", "2023-08-17T17:14:30.0000000")]
+	[DataRow("0-0:1.0.0(230817171430S)\r\nremaining", "time", "2023-08-17T17:14:30.0000000", "remaining")]
+	[DataRow("0-0:42.0.0(AUX1030303218166)", "name", "AUX1030303218166")]
+	[DataRow("0-0:96.50.68(ON)", "state", "ON")]
+	[DataRow("0-0:96.14.0(0001)", "tariff", "1")]
+	[DataRow("1-0:13.7.0(0.336)", "power_factor", "0.336")]
+	[DataRow("0-0:98.1.0(230801000000S)(000663.924*kWh)", "previous_month", "")]
+	public void TestParseDataLine(string input, string fieldName, string expectedValue, string remaining = "")
 	{
 		var inputBytes = new ReadOnlySpan<byte>(Encoding.Latin1.GetBytes(input));
 
-		bool result = _parser.TryParseDataLine(ref inputBytes, out P1Value p1Value);
+		DsmrValue? result = _parser.ParseDataLine(ref inputBytes, _values);
 
-		Assert.IsTrue(result);
 		Assert.AreEqual(remaining, Encoding.Latin1.GetString(inputBytes));
-		using (p1Value)
+		Assert.IsNotNull(result);
+		Assert.IsFalse(result.IsEmpty);
+		Assert.IsNotNull(result.Mapping);
+		Assert.AreEqual(fieldName, result.Mapping.FieldName);
+		switch (result.Mapping.DsmrType)
 		{
-			Assert.IsFalse(p1Value.IsEmpty);
-			Assert.IsNotNull(p1Value.Mapping);
-			Assert.AreEqual(fieldName, p1Value.Mapping.FieldName);
-			Assert.IsTrue(p1Value.IsValid);
-			Assert.AreEqual(expectedValue, Encoding.Latin1.GetString(p1Value.Data.Memory.Span));
-			Assert.AreEqual(expectedTime == null ? null : new DateTimeOffset(DateTime.ParseExact(expectedTime, "O", null)), p1Value.Time);
+			case DsmrType.Ignored:
+				Assert.IsInstanceOfType<DsmrIgnoredValue>(result);
+				break;
+			case DsmrType.String:
+				Assert.IsInstanceOfType<DsmrStringValue>(result);
+				Assert.AreEqual(expectedValue, ((DsmrStringValue)result).Value);
+				break;
+			case DsmrType.Number:
+				Assert.IsInstanceOfType<DsmrNumberValue>(result);
+				Assert.AreEqual(decimal.Parse(expectedValue), ((DsmrNumberValue)result).Value);
+				break;
+			case DsmrType.Time:
+				Assert.IsInstanceOfType<DsmrTimeValue>(result);
+				Assert.AreEqual(new DateTimeOffset(DateTime.ParseExact(expectedValue, "O", null)), ((DsmrTimeValue)result).Value);
+				break;
+			case DsmrType.OnOff:
+			default:
+				Assert.IsInstanceOfType<DsmrOnOffValue>(result);
+				Assert.AreEqual(Enum.Parse<DsmrOnOffValue.OnOff>(expectedValue), ((DsmrOnOffValue)result).Value);
+				break;
 		}
+		_logger.Messages.Remove(LogLevel.Trace);
+		Assert.AreEqual("{}", JsonSerializer.Serialize(_logger.Messages));
 	}
 
 	[DataTestMethod]
@@ -133,88 +151,35 @@ public class DsmrParserTest
 	[DataRow("0-0:96.50.68ON)", "", "{\"Error\":[\"0-0:96.50.68ON): not well formed, dropped\"]}")]
 	[DataRow("(ON)\r\n0-0:96.14.0(0000)", "0-0:96.14.0(0000)", "{\"Error\":[\"(ON): not well formed, dropped\"]}")]
 	[DataRow("0-0:0.0.0(ON)\r\n0-0:96.14.0(0000)", "0-0:96.14.0(0000)", "{\"Warning\":[\"0-0:0.0.0(ON): unknown obis id, line dropped\"]}")]
-	[DataRow("0-0:42.0.0(123456789012345678901234567890123)\r\n0-0:96.14.0(0000)", "0-0:96.14.0(0000)", "{\"Error\":[\"0-0:42.0.0(123456789012345678901234567890123): parsing of value failed\"]}")]
-	[DataRow("1-0:13.7.0(.336)\r\n0-0:96.14.0(0000)", "0-0:96.14.0(0000)", "{\"Error\":[\"1-0:13.7.0(.336): parsing of value failed\"]}")]
-	[DataRow("0-0:1.0.0(230817171430)\r\n0-0:96.14.0(0000)", "0-0:96.14.0(0000)", "{\"Error\":[\"0-0:1.0.0(230817171430): parsing of value failed\"]}")]
 	[DataRow("0-0:96.50.68(on)\r\n0-0:96.14.0(0000)", "0-0:96.14.0(0000)", "{\"Error\":[\"0-0:96.50.68(on): parsing of value failed\"]}")]
-	public void TestTryParseDataLineFailure(string input, string remaining, string expectedLog)
+	public void TestParseDataLineFailure(string input, string remaining, string expectedLog)
 	{
 		var inputBytes = new ReadOnlySpan<byte>(Encoding.Latin1.GetBytes(input));
 
-		Assert.IsFalse(_parser.TryParseDataLine(ref inputBytes, out P1Value p1Value));
+		DsmrValue? result = _parser.ParseDataLine(ref inputBytes, _values);
 
 		Assert.AreEqual(remaining, Encoding.Latin1.GetString(inputBytes));
-		Assert.IsTrue(p1Value.IsEmpty);
+		if (result != null)
+		{
+			Assert.IsTrue(result.IsEmpty);
+		}
 		Assert.AreEqual(expectedLog, JsonSerializer.Serialize(_logger.Messages));
 	}
 
-	[DataTestMethod]
-	[DataRow("0", "0", DsmrUnit.None)]
-	[DataRow("0000", "0", DsmrUnit.None)]
-	[DataRow("4.2", "4.2", DsmrUnit.None)]
-	[DataRow("0042.4200", "42.42", DsmrUnit.None)]
-	[DataRow("0.42", "0.42", DsmrUnit.None)]
-	[DataRow("42.0", "42.0", DsmrUnit.None)]
-	[DataRow("42", "42", DsmrUnit.None)]
-	[DataRow("42*kWh", "42", DsmrUnit.kWh)]
-	[DataRow("42*kvarh", "42", DsmrUnit.kvarh)]
-	[DataRow("42*kW", "42", DsmrUnit.kW)]
-	[DataRow("42*kvar", "42", DsmrUnit.kvar)]
-	[DataRow("42*Hz", "42", DsmrUnit.Hz)]
-	[DataRow("42*V", "42", DsmrUnit.V)]
-	[DataRow("42*A", "42", DsmrUnit.A)]
-	public void TestTryParseNumber(string input, string expectedData, DsmrUnit unit)
+	[TestMethod]
+	public void TestParseDataLineDuplicatedValue()
 	{
-		byte[] bytes = Encoding.Latin1.GetBytes(input);
+		ReadOnlySpan<byte> inputBytes = "0-0:96.50.68(ON)\r\n0-0:96.50.68(ON)"u8;
 
-		Assert.AreEqual(true, DsmrParser.TryParseNumber(bytes, unit, out ReadOnlySpan<byte> number));
+		DsmrValue? result = _parser.ParseDataLine(ref inputBytes, _values);
+		Assert.IsNotNull(result);
+		Assert.IsFalse(result.IsEmpty);
+		_logger.Messages.Remove(LogLevel.Trace);
+		Assert.AreEqual("{}", JsonSerializer.Serialize(_logger.Messages));
 
-		Assert.AreEqual(expectedData, Encoding.Latin1.GetString(number));
-	}
-
-	[DataTestMethod]
-	[DataRow("42", DsmrUnit.kW)]
-	[DataRow("42*kWh", DsmrUnit.kW)]
-	[DataRow("42*kvarh", DsmrUnit.kvar)]
-	[DataRow("42*kW", DsmrUnit.kWh)]
-	[DataRow("42*kvar", DsmrUnit.kvarh)]
-	[DataRow("42*Hz", DsmrUnit.A)]
-	[DataRow("42*V", DsmrUnit.A)]
-	[DataRow("42*A", DsmrUnit.V)]
-	public void TestTryParseNumberFailure(string input, DsmrUnit unit)
-	{
-		byte[] bytes = Encoding.Latin1.GetBytes(input);
-
-		Assert.AreEqual(false, DsmrParser.TryParseNumber(bytes, unit, out ReadOnlySpan<byte> number));
-
-		Assert.IsTrue(number == default);
-	}
-
-	[DataTestMethod]
-	[DataRow("230821112430S", "2023-08-21T11:24:30.0000000")]
-	public void TestTryParseTime(string input, string expectedTime)
-	{
-		Assert.IsTrue(DsmrParser.TryParseTime(Encoding.Latin1.GetBytes(input), out DateTimeOffset? time));
-
-		Assert.AreEqual(new DateTimeOffset(DateTime.ParseExact(expectedTime, "O", null)), time);
-	}
-
-	[DataTestMethod]
-	[DataRow("20230821112430S")]
-	[DataRow("230821112430s")]
-	[DataRow(" 30821112430S")]
-	[DataRow("A30821112430S")]
-	[DataRow("230021112430S")]
-	[DataRow("231321112430S")]
-	[DataRow("230800112430S")]
-	[DataRow("230832112430S")]
-	[DataRow("230821242430S")]
-	[DataRow("230821116030S")]
-	[DataRow("230821112460S")]
-	public void TestTryParseTimeFailure(string input)
-	{
-		Assert.IsFalse(DsmrParser.TryParseTime(Encoding.Latin1.GetBytes(input), out DateTimeOffset? time));
-
-		Assert.IsNull(time);
+		result = _parser.ParseDataLine(ref inputBytes, _values);
+		Assert.IsNotNull(result);
+		Assert.IsTrue(result.IsEmpty);
+		Assert.AreEqual("{\"Error\":[\"0-0:96.50.68(ON): duplicated value\"]}", JsonSerializer.Serialize(_logger.Messages));
 	}
 }

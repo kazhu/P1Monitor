@@ -13,7 +13,7 @@ namespace P1Monitor;
 
 public interface IInfluxDbWriter
 {
-	void Insert(P1Value[] values);
+	void Insert(DsmrValue[] values);
 }
 
 public class InfluxDbWriter : BackgroundService, IInfluxDbWriter
@@ -24,7 +24,7 @@ public class InfluxDbWriter : BackgroundService, IInfluxDbWriter
 	private readonly HttpClient _client = new();
 	private readonly string _requestUri;
 	private readonly MediaTypeHeaderValue _mediaTypeHeaderValue = new("text/plain", Encoding.UTF8.WebName);
-	private readonly BlockingCollection<TrimmedMemory> _blockingCollection = new();
+	private readonly BlockingCollection<(byte[] buffer, int length)> _blockingCollection = new();
 
 	public InfluxDbWriter(ILogger<InfluxDbWriter> logger, IObisMappingsProvider obisMappingProvider, IOptions<InfluxDbOptions> options)
 	{
@@ -36,7 +36,7 @@ public class InfluxDbWriter : BackgroundService, IInfluxDbWriter
 		_requestUri = $"api/v2/write?org={_options.Organization}&bucket={_options.Bucket}&precision=s";
 	}
 
-	public void Insert(P1Value[] values)
+	public void Insert(DsmrValue[] values)
 	{
 		_blockingCollection.Add(GenerateLines(values));
 	}
@@ -52,11 +52,11 @@ public class InfluxDbWriter : BackgroundService, IInfluxDbWriter
 		{
 			try
 			{
-				foreach (TrimmedMemory data in _blockingCollection.GetConsumingEnumerable(stoppingToken))
+				foreach ((byte[] buffer, int length) in _blockingCollection.GetConsumingEnumerable(stoppingToken))
 				{
-					using (data)
+					try
 					{
-						using var content = new ReadOnlyMemoryContent(data.Memory);
+						using var content = new StreamContent(new MemoryStream(buffer, 0, length, false, true), length);
 						content.Headers.ContentType = _mediaTypeHeaderValue;
 						using var request = new HttpRequestMessage(HttpMethod.Post, _requestUri) { Content = content };
 						using HttpResponseMessage response = _client.Send(request, stoppingToken);
@@ -67,8 +67,12 @@ public class InfluxDbWriter : BackgroundService, IInfluxDbWriter
 						}
 						else
 						{
-							_logger.LogDebug("Wrote {Length} long values to InfluxDB", data.Memory.Length);
+							_logger.LogDebug("Wrote {Length} long values to InfluxDB", length);
 						}
+					}
+					finally
+					{
+						ArrayPool<byte>.Shared.Return(buffer);
 					}
 				}
 			}
@@ -84,22 +88,23 @@ public class InfluxDbWriter : BackgroundService, IInfluxDbWriter
 		_logger.LogInformation("InfluxDB writer stopped");
 	}
 
-	internal TrimmedMemory GenerateLines(P1Value[] values)
+	internal (byte[], int) GenerateLines(DsmrValue[] values)
 	{
 		int length = CalculateLength(values);
 		byte[] buffer = ArrayPool<byte>.Shared.Rent(length);
 		try
 		{
 			ReadOnlySpan<byte> result = WriteValues(values, buffer);
-			return new TrimmedMemory(result);
+			return (buffer, result.Length);
 		}
-		finally
+		catch
 		{
 			ArrayPool<byte>.Shared.Return(buffer);
+			throw;
 		}
 	}
 
-	private int CalculateLength(P1Value[] values)
+	private int CalculateLength(DsmrValue[] values)
 	{
 		int length = 0;
 		foreach (UnitNumberMappings unitNumberMappings in _obisMappingProvider.Mappings.NumberMappingsByUnit)
@@ -107,20 +112,26 @@ public class InfluxDbWriter : BackgroundService, IInfluxDbWriter
 			length += ("p1value" + ",unit=" + " " + " " + "\n").Length + 10/*epoch seconds*/ + unitNumberMappings.Unit.Length;
 			foreach (ObisMapping mapping in _obisMappingProvider.Mappings.Tags)
 			{
-				length += mapping.FieldName.Length + values[mapping.Index].Data.Memory.Span.Length + 2;
+				length += mapping.FieldName.Length + 2;
+				length += values[mapping.Index] switch
+				{
+					DsmrStringValue stringValue => Encoding.Latin1.GetByteCount(stringValue.Value),
+					DsmrOnOffValue onOffValue => onOffValue.Value == DsmrOnOffValue.OnOff.ON ? 2 : 3,
+					_ => throw new NotSupportedException($"Unsupported type {values[mapping.Index].GetType().Name}"),
+				};
 			}
 			foreach (ObisMapping mapping in unitNumberMappings.Mappings)
 			{
-				length += mapping.FieldName.Length + values[mapping.Index].Data.Memory.Span.Length + 2;
+				length += mapping.FieldName.Length + 64/*decimal max length*/ + 2;
 			}
 		}
 
 		return length;
 	}
 
-	private ReadOnlySpan<byte> WriteValues(P1Value[] values, Span<byte> buffer)
+	private ReadOnlySpan<byte> WriteValues(DsmrValue[] values, Span<byte> buffer)
 	{
-		DateTimeOffset time = (_obisMappingProvider.Mappings.TimeField is null ? null : values[_obisMappingProvider.Mappings.TimeField.Index].Time) ?? DateTimeOffset.Now;
+		DateTimeOffset time = (_obisMappingProvider.Mappings.TimeField is null ? null : ((DsmrTimeValue)values[_obisMappingProvider.Mappings.TimeField.Index]).Value) ?? DateTimeOffset.Now;
 		Span<byte> span = buffer;
 		foreach (UnitNumberMappings unitNumberMappings in _obisMappingProvider.Mappings.NumberMappingsByUnit)
 		{
@@ -131,7 +142,7 @@ public class InfluxDbWriter : BackgroundService, IInfluxDbWriter
 					.Append(',')
 					.Append(mapping.FieldName)
 					.Append('=')
-					.Append(values[mapping.Index].Data);
+					.Append(values[mapping.Index]);
 			}
 			if (unitNumberMappings.Unit != nameof(DsmrUnit.None))
 			{
@@ -155,7 +166,7 @@ public class InfluxDbWriter : BackgroundService, IInfluxDbWriter
 				span = span
 					.Append(mapping.FieldName)
 					.Append('=')
-					.Append(values[mapping.Index].Data);
+					.Append(values[mapping.Index]);
 			}
 
 			span = span
@@ -170,10 +181,38 @@ public class InfluxDbWriter : BackgroundService, IInfluxDbWriter
 
 public static class SpanExtensions
 {
-	public static Span<byte> Append(this Span<byte> span, TrimmedMemory data)
+	public static Span<byte> Append(this Span<byte> span, DsmrValue value)
 	{
-		data.Memory.Span.CopyTo(span);
-		return span[data.Memory.Length..];
+		if (value is DsmrNumberValue numberValue)
+		{
+			Span<char> chars = stackalloc char[64];
+			numberValue.Value.TryFormat(chars, out int dataWritten, format: null, provider: CultureInfo.InvariantCulture);
+			Encoding.Latin1.GetBytes(chars[..dataWritten], span[..dataWritten]);
+			return span[dataWritten..];
+		}
+		else if (value is DsmrStringValue stringValue)
+		{
+			int length = Encoding.Latin1.GetByteCount(stringValue.Value);
+			Encoding.Latin1.GetBytes(stringValue.Value, span[..length]);
+			return span[length..];
+		}
+		else if (value is DsmrOnOffValue onOffValue)
+		{
+			if (onOffValue.Value == DsmrOnOffValue.OnOff.ON)
+			{
+				"ON"u8.CopyTo(span);
+				return span[2..];
+			}
+			else
+			{
+				"OFF"u8.CopyTo(span);
+				return span[3..];
+			}
+		}
+		else
+		{
+			throw new NotSupportedException($"Unsupported type {value.GetType().Name}");
+		}
 	}
 
 	public static Span<byte> Append(this Span<byte> span, char value)
@@ -184,11 +223,9 @@ public static class SpanExtensions
 
 	public static Span<byte> Append(this Span<byte> span, string value)
 	{
-		for (var i = 0; i < value.Length; i++)
-		{
-			span[i] = (byte)value[i];
-		}
-		return span[value.Length..];
+		int length = Encoding.Latin1.GetByteCount(value);
+		Encoding.Latin1.GetBytes(value, span[..length]);
+		return span[length..];
 	}
 
 	public static Span<byte> Append(this Span<byte> span, long data)

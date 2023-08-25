@@ -72,7 +72,7 @@ public class ObisMappingsProviderTest
 		Assert.AreEqual(1, data.Count);
 		Assert.AreEqual("0-0:1.0.0", data[0].Id);
 		Assert.AreEqual("time", data[0].FieldName);
-		Assert.AreEqual(DsmrType.Time, data[0].P1Type);
+		Assert.AreEqual(DsmrType.Time, data[0].DsmrType);
 		Assert.AreEqual(DsmrUnit.A, data[0].Unit);
 	}
 }

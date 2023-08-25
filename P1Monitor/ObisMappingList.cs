@@ -15,9 +15,9 @@ public class ObisMappingList : IReadOnlyList<ObisMapping>
 	{
 		_mappings = mappings;
 		Count = mappings.Count;
-		Tags = mappings.Where(x => x.P1Type == DsmrType.String || x.P1Type == DsmrType.OnOff).OrderBy(x => x.FieldName).ToArray();
-		NumberMappingsByUnit = mappings.Where(x => x.P1Type == DsmrType.Number).GroupBy(x => x.Unit).Select(g => new UnitNumberMappings(g.Key.ToString(), g.OrderBy(x => x.FieldName).ToArray())).ToArray();
-		TimeField = mappings.FirstOrDefault(x => x.P1Type == DsmrType.Time);
+		Tags = mappings.Where(x => x.DsmrType == DsmrType.String || x.DsmrType == DsmrType.OnOff).OrderBy(x => x.FieldName).ToArray();
+		NumberMappingsByUnit = mappings.Where(x => x.DsmrType == DsmrType.Number).GroupBy(x => x.Unit).Select(g => new UnitNumberMappings(g.Key.ToString(), g.OrderBy(x => x.FieldName).ToArray())).ToArray();
+		TimeField = mappings.FirstOrDefault(x => x.DsmrType == DsmrType.Time);
 		_root = new TrieNode(mappings);
 	}
 
@@ -61,56 +61,68 @@ public class ObisMappingList : IReadOnlyList<ObisMapping>
 			{
 				Add(Encoding.Latin1.GetBytes(mapping.Id), mapping);
 			}
-			TrimMemory();
+
+			// DFS to trim excess memory
+			Stack<TrieNode> nodes = new();
+			nodes.Push(this);
+			while (nodes.TryPop(out TrieNode? node))
+			{
+				node.TrimExcessMemory();
+				foreach (TrieNode child in node._children)
+				{
+					if (child != null) nodes.Push(child);
+				}
+			}
 		}
 
 		private void Add(ReadOnlySpan<byte> span, ObisMapping mapping)
 		{
-			if (span.Length > 0)
+			TrieNode node = this;
+			for (int i = 0; i < span.Length; i++)
 			{
-				_children[span[0]] = _children[span[0]] ?? new TrieNode();
-				_children[span[0]].Add(span[1..], mapping);
+				if (node._children[span[i]] == null)
+				{
+					node = node._children[span[i]] = new TrieNode();
+				}
+				else
+				{
+					node = node._children[span[i]];
+				}
 			}
-			else
-			{
-				if (_mapping != null) throw new ArgumentException("Duplicate id mapping");
-				_mapping = mapping;
-			}
+			if (node._mapping != null) throw new ArgumentException("Duplicate id mapping");
+			node._mapping = mapping;
 		}
 
-		private void TrimMemory()
+		private void TrimExcessMemory()
 		{
 			int i = 0;
 			while (i < _children.Length && _children[i] == null) i++;
+
 			if (i == _children.Length)
 			{
 				_children = Array.Empty<TrieNode>();
 				return;
 			}
 			_offset = i;
+
 			i = _children.Length - 1;
 			while (i >= 0 && _children[i] == null) i--;
+
 			TrieNode[] tmp = new TrieNode[i - _offset + 1];
 			Array.Copy(_children, _offset, tmp, 0, tmp.Length);
 			_children = tmp;
-			for (int i2 = 0; i2 < _children.Length; i2++)
-			{
-				_children[i2]?.TrimMemory();
-			}
 		}
 
 		public ObisMapping? Find(ReadOnlySpan<byte> span)
 		{
-			if (span.Length > 0)
+			TrieNode node = this;
+			for (int i = 0; i < span.Length; i++)
 			{
-				int index = span[0] - _offset;
-				if (index < 0 || index >= _children.Length) return null;
-				return _children[index]?.Find(span[1..]);
+				int index = span[i] - node._offset;
+				if (index < 0 || index >= node._children.Length || node._children[index] == null) return null;
+				node = node._children[index];
 			}
-			else
-			{
-				return _mapping;
-			}
+			return node._mapping;
 		}
 	}
 }

@@ -7,7 +7,7 @@ namespace P1Monitor;
 public interface IDsmrParser
 {
 	bool TryFindDataLines(ref ReadOnlySpan<byte> buffer, out ReadOnlySpan<byte> dataLines);
-	bool TryParseDataLine(ref ReadOnlySpan<byte> buffer, out P1Value value);
+	DsmrValue? ParseDataLine(ref ReadOnlySpan<byte> buffer, DsmrValue[] values);
 }
 
 public class DsmrParser : IDsmrParser
@@ -65,7 +65,7 @@ public class DsmrParser : IDsmrParser
 		index += 3;
 		if (index + 5 >= buffer.Length) return false;
 		isFirstDatagram = false;
-		if (buffer[index + 4] == '\r' && buffer[index + 5] == '\n' && ModbusCrc.CheckCrc(buffer[..index], buffer.Slice(index, 4)))
+		if (buffer[index + 4] == '\r' && buffer[index + 5] == '\n' && DsmrCrc.CheckCrc(buffer[..index], buffer.Slice(index, 4)))
 		{
 			dataLines = buffer.Slice(dataStartIndex, dataLength);
 			buffer = buffer[(index + 6)..];
@@ -78,9 +78,8 @@ public class DsmrParser : IDsmrParser
 		return false;
 	}
 
-	public bool TryParseDataLine(ref ReadOnlySpan<byte> buffer, out P1Value value)
+	public DsmrValue? ParseDataLine(ref ReadOnlySpan<byte> buffer, DsmrValue[] values)
 	{
-		value = default;
 		int index = buffer.IndexOf("\r\n"u8);
 		ReadOnlySpan<byte> line;
 		if (index >= 0)
@@ -98,129 +97,33 @@ public class DsmrParser : IDsmrParser
 		if (index < 1 || line[^1] != ')')
 		{
 			_logger.LogError("{Line}: not well formed, dropped", _encoding.GetString(line));
-			return false;
+			return null;
 		}
+		var valueSpan = line.Slice(index + 1, line.Length - index - 2);
 
 		if (!_obisMappingProvider.Mappings.TryGetMappingById(line[..index], out ObisMapping? mapping))
 		{
 			_logger.LogWarning("{Line}: unknown obis id, line dropped", _encoding.GetString(line));
-			return false;
+			return null;
 		}
 
-		var valueSpan = line.Slice(index + 1, line.Length - index - 2);
-		P1Value p1Value = mapping!.P1Type switch
+		DsmrValue value = values[mapping!.Index];
+		if (!value.IsEmpty)
 		{
-			DsmrType.Ignored => new P1Value(mapping, new TrimmedMemory(valueSpan), true),
-			DsmrType.String => new P1Value(mapping, new TrimmedMemory(valueSpan), valueSpan.Length <= 32),
-			DsmrType.Number => TryParseNumber(valueSpan, mapping.Unit, out var number)
-				? new P1Value(mapping, new TrimmedMemory(number), true)
-				: new P1Value(mapping, new TrimmedMemory(valueSpan), false),
-			DsmrType.Time => new P1Value(mapping, new TrimmedMemory(valueSpan), TryParseTime(valueSpan, out var time), Time: time),
-			DsmrType.OnOff => new P1Value(mapping, new TrimmedMemory(valueSpan), IsOnOff(valueSpan)),
-			_ => throw new NotImplementedException(),
-		};
-		if (!p1Value.IsValid)
+			_logger.LogError("{Line}: duplicated value", _encoding.GetString(line));
+			return DsmrValue.Error;
+		}
+
+		if (!value.TrySetValue(valueSpan))
 		{
-			p1Value.Dispose();
 			_logger.LogError("{Line}: parsing of value failed", _encoding.GetString(line));
-			return false;
+			return value;
 		}
 
-		value = p1Value;
-		return true;
-	}
-
-	public static bool TryParseNumber(ReadOnlySpan<byte> span, DsmrUnit unit, out ReadOnlySpan<byte> number)
-	{
-		int separatorIndex = span.IndexOf((byte)'*');
-		if (separatorIndex >= 0)
+		if (_logger.IsEnabled(LogLevel.Trace))
 		{
-			ReadOnlySpan<byte> expectedUnitText = unit switch
-			{
-				DsmrUnit.kWh => "*kWh"u8,
-				DsmrUnit.kvarh => "*kvarh"u8,
-				DsmrUnit.kW => "*kW"u8,
-				DsmrUnit.kvar => "*kvar"u8,
-				DsmrUnit.Hz => "*Hz"u8,
-				DsmrUnit.V => "*V"u8,
-				DsmrUnit.A => "*A"u8,
-				_ => Span<byte>.Empty,
-			};
-			if (!span[separatorIndex..].SequenceEqual(expectedUnitText))
-			{
-				number = default;
-				return false;
-			}
-			number = TrimZerosForNumber(span[..separatorIndex]);
+			_logger.LogTrace("{Value} parsed", value.ToString());
 		}
-		else
-		{
-			if (unit != DsmrUnit.None)
-			{
-				number = default;
-				return false;
-			}
-			number = TrimZerosForNumber(span);
-		}
-
-		return IsNumber(number);
+		return value;
 	}
-
-	public static bool TryParseTime(ReadOnlySpan<byte> span, out DateTimeOffset? time)
-	{
-		time = null;
-		if (span.Length != 13 || span[12] != 'S') return false;
-		for (int i = 0; i < 12; i++) if (span[i] < '0' || span[i] > '9') return false;
-		int year = 2000 + Get2DigitsValue(span, 0);
-		int month = Get2DigitsValue(span, 2);
-		int day = Get2DigitsValue(span, 4);
-		int hour = Get2DigitsValue(span, 6);
-		int minute = Get2DigitsValue(span, 8);
-		int second = Get2DigitsValue(span, 10);
-		if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59)
-		{
-			return false;
-		}
-		try
-		{
-			time = new DateTimeOffset(year, month, day, hour, minute, second, DateTimeOffset.Now.Offset); // it is not perfect, because of DST may effect the result
-			return true;
-		}
-		catch (ArgumentException)
-		{
-			return false;
-		}
-	}
-
-	private static bool IsOnOff(ReadOnlySpan<byte> span)
-	{
-		return span.SequenceEqual("ON"u8) || span.SequenceEqual("OFF"u8);
-	}
-
-	private static bool IsNumber(ReadOnlySpan<byte> value)
-	{
-		int dotIndex = value.IndexOf((byte)'.');
-		for (int i = 0; i < value.Length; i++)
-		{
-			// disallow non digits except in the dot position
-			if ((value[i] < '0' || value[i] > '9') && i != dotIndex) return false;
-		}
-		// valid if dot is not the first or last character and not too long
-		return dotIndex != 0 && dotIndex != value.Length - 1 && value.Length < 15;
-	}
-
-	private static ReadOnlySpan<byte> TrimZerosForNumber(ReadOnlySpan<byte> span)
-	{
-		int start = 0, end = span.Length;
-		if (start == end) return span;
-		while (start < end && span[start] == '0') start++; // drop leading zeros
-		while (start < end && span[end - 1] == '0') end--; // drop trailing zeros
-		if (start == end) start = end - 1; // keep at least one zero
-		if (start > 0 && span[start] == '.') start--;  // if all leading zeros were dropped, add one back
-		if (end < span.Length && span[end - 1] == '.') end++; // if all trailing zeros were dropped, add one back
-		return span[start..end];
-	}
-
-	[MethodImpl(MethodImplOptions.AggressiveInlining)]
-	private static int Get2DigitsValue(ReadOnlySpan<byte> span, int index) => (span[index] - '0') * 10 + (span[index + 1] - '0');
 }

@@ -1,6 +1,7 @@
 ﻿using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using P1Monitor.Model;
 using P1Monitor.Options;
 using System.Net.Sockets;
 using System.Text;
@@ -16,7 +17,7 @@ public partial class DsmrReader : BackgroundService
 	private readonly IDsmrParser _dsmrParser;
 	private readonly IObisMappingsProvider _obisMappingProvider;
 	private readonly DsmrReaderOptions _options;
-	private readonly P1Value[] _values;
+	private readonly DsmrValue[] _values;
 	private Socket? _socket = null!;
 
 	public DsmrReader(ILogger<DsmrReader> logger, IInfluxDbWriter influxDbWriter, IDsmrParser dsmrParser, IObisMappingsProvider obisMappingProvider, IOptions<DsmrReaderOptions> options)
@@ -26,7 +27,11 @@ public partial class DsmrReader : BackgroundService
 		_dsmrParser = dsmrParser;
 		_obisMappingProvider = obisMappingProvider;
 		_options = options.Value;
-		_values = new P1Value[_obisMappingProvider.Mappings.Count];
+		_values = new DsmrValue[_obisMappingProvider.Mappings.Count];
+		foreach (ObisMapping mapping in _obisMappingProvider.Mappings)
+		{
+			_values[mapping.Index] = DsmrValue.Create(mapping);
+		}
 	}
 
 	protected override Task ExecuteAsync(CancellationToken stoppingToken)
@@ -103,27 +108,14 @@ public partial class DsmrReader : BackgroundService
 
 	private void ProcessDataLines(ReadOnlySpan<byte> span)
 	{
-		bool hasError = false;
+		foreach (DsmrValue value in _values) value.Clear();
+
 		while (!span.IsEmpty)
 		{
-			if (_dsmrParser.TryParseDataLine(ref span, out var value))
-			{
-				if (!_values[value.Mapping!.Index].IsEmpty)
-				{
-					_logger.LogError("{Value}: duplicated value", value.ToString());
-					value.Dispose();
-					hasError = true;
-					continue;
-				}
-
-				if (_logger.IsEnabled(LogLevel.Trace))
-				{
-					_logger.LogTrace("{Value} parsed", value.ToString());
-				}
-				_values[value.Mapping!.Index] = value;
-			}
+			_dsmrParser.ParseDataLine(ref span, _values);
 		}
 
+		bool hasError = false;
 		for (int i = 0; i < _values.Length; i++)
 		{
 			if (_values[i].IsEmpty)
@@ -137,15 +129,11 @@ public partial class DsmrReader : BackgroundService
 		{
 			if (_logger.IsEnabled(LogLevel.Debug))
 			{
-				_logger.LogDebug("Enqueuing values for {Time}", (_obisMappingProvider.Mappings.TimeField is null ? null : _values[_obisMappingProvider.Mappings.TimeField.Index].Time) ?? DateTimeOffset.Now);
+				_logger.LogDebug("Enqueuing values for {Time}", (_obisMappingProvider.Mappings.TimeField is null ? null : ((DsmrTimeValue)_values[_obisMappingProvider.Mappings.TimeField.Index]).Value) ?? DateTimeOffset.Now);
 			}
 			_influxDbWriter.Insert(_values);
 		}
 
-		for (int i = 0; i < _values.Length; i++)
-		{
-			_values[i].Dispose();
-			_values[i] = default;
-		}
+		foreach (DsmrValue value in _values) value.Clear();
 	}
 }

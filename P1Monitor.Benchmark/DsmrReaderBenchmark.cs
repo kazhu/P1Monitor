@@ -2,6 +2,7 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using P1Monitor.Model;
 using P1Monitor.Options;
+using System.Buffers;
 using OptionsFactory = Microsoft.Extensions.Options.Options;
 
 namespace P1Monitor.Benchmark;
@@ -14,7 +15,7 @@ public class DsmrReaderBenchmark
 	private readonly DsmrParser _dsmrParser;
 	private readonly DsmrReader _reader;
 	private readonly byte[] _data;
-	private readonly P1Value[] _values;
+	private readonly DsmrValue[] _values;
 
 	public DsmrReaderBenchmark()
 	{
@@ -24,24 +25,10 @@ public class DsmrReaderBenchmark
 		_reader = new DsmrReader(NullLogger<DsmrReader>.Instance, new NullInfluxDbWriter(), _dsmrParser, obisMappingProvider, OptionsFactory.Create(_options));
 		_influxDbWriter = new InfluxDbWriter(NullLogger<InfluxDbWriter>.Instance, obisMappingProvider, OptionsFactory.Create(new InfluxDbOptions { BaseUrl = "http://localhost", Bucket = "b", Organization = "o", Token = "t" }));
 		_data = File.ReadAllBytes("lines.txt");
-		_values = new P1Value[obisMappingProvider.Mappings.Count];
-		for (int i = 0; i < _values.Length; i++)
+		_values = new DsmrValue[obisMappingProvider.Mappings.Count];
+		foreach (ObisMapping mapping in obisMappingProvider.Mappings)
 		{
-			var mapping = obisMappingProvider.Mappings[i];
-			switch (mapping.P1Type)
-			{
-				case DsmrType.Ignored:
-				case DsmrType.String:
-				case DsmrType.Number:
-					_values[i] = new P1Value(mapping, new TrimmedMemory("12"u8), true);
-					break;
-				case DsmrType.Time:
-					_values[i] = new P1Value(mapping, new TrimmedMemory("12"u8), true, DateTimeOffset.Now);
-					break;
-				case DsmrType.OnOff:
-					_values[i] = new P1Value(mapping, new TrimmedMemory("ON"u8), true);
-					break;
-			}
+			_values[mapping.Index] = DsmrValue.Create(mapping);
 		}
 	}
 
@@ -104,7 +91,7 @@ public class DsmrReaderBenchmark
 
 	private class NullInfluxDbWriter : IInfluxDbWriter
 	{
-		public void Insert(P1Value[] values) { }
+		public void Insert(DsmrValue[] values) { }
 	}
 
 
@@ -117,7 +104,7 @@ public class DsmrReaderBenchmark
 	[Benchmark]
 	public void GenerateLines()
 	{
-		TrimmedMemory data = _influxDbWriter.GenerateLines(_values);
-		data.Dispose();
+		(byte[] Buffer, int _) = _influxDbWriter.GenerateLines(_values);
+		ArrayPool<byte>.Shared.Return(Buffer);
 	}
 }

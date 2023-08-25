@@ -2,10 +2,17 @@
 
 public class TestInfluxDbWriter : IInfluxDbWriter
 {
-	public List<P1Value[]> Values { get; } = new();
+	public List<DsmrValue[]> Values { get; } = new();
 
-	public void Insert(P1Value[] values)
+	public void Insert(DsmrValue[] values)
 	{
-		Values.Add(values.Select(x => x with { Data = new TrimmedMemory(x.Data.Memory.Span) } ).ToArray());
+		Values.Add(values.Select(x => (DsmrValue)(x switch { 
+			DsmrIgnoredValue ignoredValue => new DsmrIgnoredValue(x.Mapping),
+			DsmrStringValue stringValue => new DsmrStringValue(x.Mapping, stringValue.Value),
+			DsmrNumberValue numberValue => new DsmrNumberValue(x.Mapping, numberValue.Value),
+			DsmrTimeValue timeValue => new DsmrTimeValue(x.Mapping, timeValue.Value!.Value),
+			DsmrOnOffValue onOffValue => new DsmrOnOffValue(x.Mapping, onOffValue.Value),
+			_ => throw new NotImplementedException()
+		})).ToArray());
 	}
 }
