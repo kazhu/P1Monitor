@@ -7,6 +7,7 @@ chmod +x /tmp/p1monitor/usr/lib/p1monitor/P1Monitor
 cp ../createdump /tmp/p1monitor/usr/lib/p1monitor
 chmod +x /tmp/p1monitor/usr/lib/p1monitor/createdump
 cp ../*.dll /tmp/p1monitor/usr/lib/p1monitor
+cp ../obismappings.json /tmp/p1monitor/usr/lib/p1monitor
 cp ../*.pdb /tmp/p1monitor/usr/lib/p1monitor
 cp ../*.so /tmp/p1monitor/usr/lib/p1monitor
 cp ../P1Monitor.*.json /tmp/p1monitor/usr/lib/p1monitor

@@ -39,7 +39,7 @@ public class ObisMappingsProvider : IObisMappingsProvider
 		Dictionary<string, DeviceMappingDescriptor> mappings = JsonSerializer.Deserialize<Dictionary<string, DeviceMappingDescriptor>>(json, Options)!;
 		DeviceMappingDescriptor mapping = mappings[_options.DeviceName];
 		_logger.LogInformation("Using {Device} device mappings", _options.DeviceName);
-		return new ObisMappingList(mapping.Mapping.Select(x => new ObisMapping(x.Key, x.Value.FieldName, x.Value.Type, x.Value.Unit)).ToList());
+		return new ObisMappingList(mapping.Mapping.Select((x, i) => new ObisMapping(x.Key, x.Value.FieldName, x.Value.Type, x.Value.Unit, i)).ToList());
 	}
 
 	public ObisMappingList Mappings => _mappings.Value;

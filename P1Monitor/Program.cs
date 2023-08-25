@@ -4,7 +4,6 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Hosting.Systemd;
 using Microsoft.Extensions.Logging;
 using P1Monitor.Options;
-using System.Diagnostics;
 
 namespace P1Monitor;
 
