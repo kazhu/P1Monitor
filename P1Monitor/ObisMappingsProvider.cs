@@ -14,19 +14,19 @@ public interface IObisMappingsProvider
 
 public class ObisMappingsProvider : IObisMappingsProvider
 {
-	private static readonly JsonSerializerOptions Options = new() { Converters = { new JsonStringEnumConverter() }, PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+    private static readonly JsonSerializerOptions Options = new() { Converters = { new JsonStringEnumConverter<DsmrType>(), new JsonStringEnumConverter<DsmrUnit>() }, PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 	private readonly ILogger<ObisMappingsProvider> _logger;
 	private readonly ObisMappingsOptions _options;
 	private readonly Lazy<ObisMappingList> _mappings;
 
-	public ObisMappingsProvider(ILogger<ObisMappingsProvider> logger, IOptions<ObisMappingsOptions> options)
+    public ObisMappingsProvider(ILogger<ObisMappingsProvider> logger, IOptions<ObisMappingsOptions> options)
 	{
 		_logger = logger;
 		_options = options.Value;
 		_mappings = new Lazy<ObisMappingList>(CreateMapping, true);
 	}
 
-	private ObisMappingList CreateMapping()
+    private ObisMappingList CreateMapping()
 	{
 		string filePath = _options.MappingFile;
 		if (!Path.IsPathRooted(filePath))

@@ -172,7 +172,7 @@ public class DsmrTimeValue : DsmrValue
 
 	public override bool TrySetValue(ReadOnlySpan<byte> span)
 	{
-		if (span.Length != 13 || span[12] != 'S') goto Failed;
+		if (span.Length != 13 || (span[12] != 'S' && span[12] != 'W')) goto Failed;
 		span = span[..12];
 
 		Span<char> charSpan = stackalloc char[span.Length];

@@ -139,6 +139,9 @@ public class DsmrValueTest
 		var value = new DsmrTimeValue(new ObisMapping("id", "field", DsmrType.Time));
 		Assert.AreNotEqual(value, DsmrValue.Error);
 		Assert.IsTrue(value.IsEmpty);
+		Assert.IsTrue(value.TrySetValue("230821112430W"u8));
+		Assert.AreEqual(expectedValue, value.Value);
+		Assert.IsFalse(value.IsEmpty);
 		Assert.IsTrue(value.TrySetValue("230821112430S"u8));
 		Assert.AreEqual(expectedValue, value.Value);
 		Assert.IsFalse(value.IsEmpty);
