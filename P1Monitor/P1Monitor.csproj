@@ -7,8 +7,9 @@
     <Nullable>enable</Nullable>
     <Platforms>AnyCPU;ARM64</Platforms>
     <AllowUnsafeBlocks>False</AllowUnsafeBlocks>
-    <!--<PublishAot>true</PublishAot>
-    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>-->
+    <PublishAot>true</PublishAot>
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+    <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
   </PropertyGroup>
 
   <ItemGroup>
