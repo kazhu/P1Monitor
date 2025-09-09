@@ -4,17 +4,12 @@ using System.Text;
 
 namespace P1Monitor;
 
-public abstract class DsmrValue
+public abstract class DsmrValue(ObisMapping mapping)
 {
 	protected static readonly Encoding _encoding = Encoding.Latin1;
 	public static readonly DsmrValue Error = new DsmrErrorValue();
 
-	protected DsmrValue(ObisMapping mapping)
-	{
-		Mapping = mapping;
-	}
-
-	public static DsmrValue Create(ObisMapping mapping) => mapping.DsmrType switch
+    public static DsmrValue Create(ObisMapping mapping) => mapping.DsmrType switch
 	{
 		DsmrType.Ignored => new DsmrIgnoredValue(mapping),
 		DsmrType.String => new DsmrStringValue(mapping),
@@ -24,9 +19,9 @@ public abstract class DsmrValue
 		_ => throw new NotImplementedException(),
 	};
 
-	public ObisMapping Mapping { get; init; }
+    public ObisMapping Mapping { get; init; } = mapping;
 
-	public bool IsEmpty { get; protected set; } = true;
+    public bool IsEmpty { get; protected set; } = true;
 
 	public abstract bool TrySetValue(ReadOnlySpan<byte> span);
 
@@ -41,11 +36,9 @@ public abstract class DsmrValue
 	}
 }
 
-public class DsmrIgnoredValue : DsmrValue
+public class DsmrIgnoredValue(ObisMapping mapping) : DsmrValue(mapping)
 {
-	public DsmrIgnoredValue(ObisMapping mapping) : base(mapping) { }
-
-	public override bool TrySetValue(ReadOnlySpan<byte> span)
+    public override bool TrySetValue(ReadOnlySpan<byte> span)
 	{
 		IsEmpty = false;
 		return true;
@@ -120,7 +113,7 @@ public class DsmrNumberValue : DsmrValue
 				DsmrUnit.Hz => "*Hz"u8,
 				DsmrUnit.V => "*V"u8,
 				DsmrUnit.A => "*A"u8,
-				_ => Span<byte>.Empty,
+				_ => [],
 			};
 			if (!span[separatorIndex..].SequenceEqual(expectedUnitText)) goto Failed;
 			span = span[..separatorIndex];
@@ -176,8 +169,7 @@ public class DsmrTimeValue : DsmrValue
 		span = span[..12];
 
 		Span<char> charSpan = stackalloc char[span.Length];
-		DateTimeOffset value = default;
-		if (Encoding.Latin1.GetChars(span, charSpan) != charSpan.Length || !DateTimeOffset.TryParseExact(charSpan, "yyMMddHHmmss", null, DateTimeStyles.AssumeLocal, out value)) goto Failed;
+		if (Encoding.Latin1.GetChars(span, charSpan) != charSpan.Length || !DateTimeOffset.TryParseExact(charSpan, "yyMMddHHmmss", null, DateTimeStyles.AssumeLocal, out DateTimeOffset value)) goto Failed;
 		_value = value;
 		IsEmpty = false;
 		return true;

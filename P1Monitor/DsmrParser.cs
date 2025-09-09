@@ -10,21 +10,13 @@ public interface IDsmrParser
 	DsmrValue? ParseDataLine(ref ReadOnlySpan<byte> buffer, DsmrValue[] values);
 }
 
-public class DsmrParser : IDsmrParser
+public class DsmrParser(ILogger<DsmrParser> logger, IObisMappingsProvider obisMappingProvider) : IDsmrParser
 {
 	private static readonly Encoding _encoding = Encoding.Latin1;
-	private readonly ILogger<DsmrParser> _logger;
-	private readonly IObisMappingsProvider _obisMappingProvider;
-	private bool isFirstDatagram = true;
+    private bool isFirstDatagram = true;
 
-	public DsmrParser(ILogger<DsmrParser> logger, IObisMappingsProvider obisMappingProvider)
-	{
-		_logger = logger;
-		_obisMappingProvider = obisMappingProvider;
-	}
-
-	// looking for /XXX5<identification>\r\n\r\n<dataLines>\r\n!<crc>\r\n where data lines are separated by \r\n and cannot contain \r\n
-	public bool TryFindDataLines(ref ReadOnlySpan<byte> buffer, out ReadOnlySpan<byte> dataLines)
+    // looking for /XXX5<identification>\r\n\r\n<dataLines>\r\n!<crc>\r\n where data lines are separated by \r\n and cannot contain \r\n
+    public bool TryFindDataLines(ref ReadOnlySpan<byte> buffer, out ReadOnlySpan<byte> dataLines)
 	{
 		dataLines = default;
 		if (buffer.IsEmpty) return false;
@@ -36,11 +28,11 @@ public class DsmrParser : IDsmrParser
 			if (packetStartIndex < 0) return false;
 			if (isFirstDatagram)
 			{
-				_logger.LogInformation("Dropped data before datagram start: {Data}", _encoding.GetString(buffer[..(packetStartIndex + 2)]));
+				logger.LogInformation("Dropped data before datagram start: {Data}", _encoding.GetString(buffer[..(packetStartIndex + 2)]));
 			}
 			else
 			{
-				_logger.LogError("Dropped data before datagram start: {Data}", _encoding.GetString(buffer[..(packetStartIndex + 2)]));
+				logger.LogError("Dropped data before datagram start: {Data}", _encoding.GetString(buffer[..(packetStartIndex + 2)]));
 			}
 			buffer = buffer[(packetStartIndex + 2)..];
 		}
@@ -50,7 +42,7 @@ public class DsmrParser : IDsmrParser
 		if (identLineEndIndex < 0 || identLineEndIndex + 3 >= buffer.Length) return false;
 		if (buffer[4] != '5' || buffer[identLineEndIndex + 2] != '\r' || buffer[identLineEndIndex + 3] != '\n')
 		{
-			_logger.LogError("Invalid identification line, dropped the line {Line}", _encoding.GetString(buffer[..identLineEndIndex]));
+			logger.LogError("Invalid identification line, dropped the line {Line}", _encoding.GetString(buffer[..identLineEndIndex]));
 			buffer = buffer[(identLineEndIndex + 2)..];
 			return false;
 		}
@@ -73,7 +65,7 @@ public class DsmrParser : IDsmrParser
 		}
 
 		// invalid crc
-		_logger.LogError("Invalid CRC, dropped the datagram {Datagram}", _encoding.GetString(buffer[..(index + 6)]));
+		logger.LogError("Invalid CRC, dropped the datagram {Datagram}", _encoding.GetString(buffer[..(index + 6)]));
 		buffer = buffer[(index + 6)..];
 		return false;
 	}
@@ -96,33 +88,33 @@ public class DsmrParser : IDsmrParser
 		index = line.IndexOf((byte)'(');
 		if (index < 1 || line[^1] != ')')
 		{
-			_logger.LogError("{Line}: not well formed, dropped", _encoding.GetString(line));
+			logger.LogError("{Line}: not well formed, dropped", _encoding.GetString(line));
 			return null;
 		}
 		var valueSpan = line.Slice(index + 1, line.Length - index - 2);
 
-		if (!_obisMappingProvider.Mappings.TryGetMappingById(line[..index], out ObisMapping? mapping))
+		if (!obisMappingProvider.Mappings.TryGetMappingById(line[..index], out ObisMapping? mapping))
 		{
-			_logger.LogWarning("{Line}: unknown obis id, line dropped", _encoding.GetString(line));
+			logger.LogWarning("{Line}: unknown obis id, line dropped", _encoding.GetString(line));
 			return null;
 		}
 
 		DsmrValue value = values[mapping!.Index];
 		if (!value.IsEmpty)
 		{
-			_logger.LogError("{Line}: duplicated value", _encoding.GetString(line));
+			logger.LogError("{Line}: duplicated value", _encoding.GetString(line));
 			return DsmrValue.Error;
 		}
 
 		if (!value.TrySetValue(valueSpan))
 		{
-			_logger.LogError("{Line}: parsing of value failed", _encoding.GetString(line));
+			logger.LogError("{Line}: parsing of value failed", _encoding.GetString(line));
 			return value;
 		}
 
-		if (_logger.IsEnabled(LogLevel.Trace))
+		if (logger.IsEnabled(LogLevel.Trace))
 		{
-			_logger.LogTrace("{Value} parsed", value.ToString());
+			logger.LogTrace("{Value} parsed", value.ToString());
 		}
 		return value;
 	}

@@ -7,18 +7,13 @@ namespace P1Monitor;
 /// It is using a circular buffer, so it will not grow indefinitely. 
 /// Fortunately, in the DSMR world we are not having too many individual strings we are interested in.
 /// </summary>
-public class DsmrStringInternCache
+public class DsmrStringInternCache(int size)
 {
-	private readonly CacheEntry[] _cache;
+	private readonly CacheEntry[] _cache = new CacheEntry[size];
 	private int _startIndex = 0; // Index of the oldest entry in the cache
-	private int _endIndex = 0;	 // before the cache is full, this is the index of the next free entry, otherwise it is always equal to _startIndex + _cache.Length 
+	private int _endIndex = 0;   // before the cache is full, this is the index of the next free entry, otherwise it is always equal to _startIndex + _cache.Length 
 
-	public DsmrStringInternCache(int size)
-	{
-		_cache = new CacheEntry[size];
-	}
-
-	public string Get(ReadOnlySpan<byte> span)
+    public string Get(ReadOnlySpan<byte> span)
 	{
 		int count = _endIndex - _startIndex;
 		for (int i = 0; i < count; i++)

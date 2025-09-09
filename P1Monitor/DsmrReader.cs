@@ -86,7 +86,7 @@ public partial class DsmrReader : BackgroundService
 			}
 			catch
 			{
-				// Ignore, becase we are stopping
+				// Ignore, because we are stopping
 			}
 		}
 		_logger.LogInformation("DSMR reader stopped");

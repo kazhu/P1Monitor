@@ -24,7 +24,7 @@ public class InfluxDbWriter : BackgroundService, IInfluxDbWriter
 	private readonly HttpClient _client = new();
 	private readonly string _requestUri;
 	private readonly MediaTypeHeaderValue _mediaTypeHeaderValue = new("text/plain", Encoding.UTF8.WebName);
-	private readonly BlockingCollection<(byte[] buffer, int length)> _blockingCollection = new();
+	private readonly BlockingCollection<(byte[] buffer, int length)> _blockingCollection = [];
 
 	public InfluxDbWriter(ILogger<InfluxDbWriter> logger, IObisMappingsProvider obisMappingProvider, IOptions<InfluxDbOptions> options)
 	{
@@ -78,7 +78,7 @@ public class InfluxDbWriter : BackgroundService, IInfluxDbWriter
 			}
 			catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
 			{
-				// Ignore, becase we are stopping
+				// Ignore, because we are stopping
 			}
 			catch (Exception ex)
 			{
