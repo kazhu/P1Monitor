@@ -3,9 +3,9 @@ set -e
 
 mkdir -p /tmp/p1monitor/usr/lib/p1monitor
 cp ../P1Monitor /tmp/p1monitor/usr/lib/p1monitor
-chmod +x /tmp/p1monitor/usr/lib/p1monitor/P1Monitor
-cp ../obismappings.json /tmp/p1monitor/usr/lib/p1monitor
 cp ../P1Monitor.dbg /tmp/p1monitor/usr/lib/p1monitor
+cp ../obismappings.json /tmp/p1monitor/usr/lib/p1monitor
+chmod +x /tmp/p1monitor/usr/lib/p1monitor/P1Monitor
 
 mkdir -p /tmp/p1monitor/etc/p1monitor
 cp ../appsettings.json /tmp/p1monitor/etc/p1monitor
