@@ -183,37 +183,39 @@ public static class SpanExtensions
 {
 	public static Span<byte> Append(this Span<byte> span, DsmrValue value)
 	{
-		if (value is DsmrNumberValue numberValue)
-		{
-			Span<char> chars = stackalloc char[64];
-			numberValue.Value.TryFormat(chars, out int dataWritten, format: null, provider: CultureInfo.InvariantCulture);
-			Encoding.Latin1.GetBytes(chars[..dataWritten], span[..dataWritten]);
-			return span[dataWritten..];
-		}
-		else if (value is DsmrStringValue stringValue)
-		{
-			int length = Encoding.Latin1.GetByteCount(stringValue.Value);
-			Encoding.Latin1.GetBytes(stringValue.Value, span[..length]);
-			return span[length..];
-		}
-		else if (value is DsmrOnOffValue onOffValue)
-		{
-			if (onOffValue.Value == DsmrOnOffValue.OnOff.ON)
-			{
-				"ON"u8.CopyTo(span);
-				return span[2..];
-			}
-			else
-			{
-				"OFF"u8.CopyTo(span);
-				return span[3..];
-			}
-		}
-		else
-		{
-			throw new NotSupportedException($"Unsupported type {value.GetType().Name}");
-		}
-	}
+        switch (value)
+        {
+            case DsmrNumberValue numberValue:
+                {
+                    Span<char> chars = stackalloc char[64];
+                    numberValue.Value.TryFormat(chars, out int dataWritten, format: null, provider: CultureInfo.InvariantCulture);
+                    Encoding.Latin1.GetBytes(chars[..dataWritten], span[..dataWritten]);
+                    return span[dataWritten..];
+                }
+
+            case DsmrStringValue stringValue:
+                {
+                    int length = Encoding.Latin1.GetByteCount(stringValue.Value);
+                    Encoding.Latin1.GetBytes(stringValue.Value, span[..length]);
+                    return span[length..];
+                }
+
+            case DsmrOnOffValue onOffValue:
+                if (onOffValue.Value == DsmrOnOffValue.OnOff.ON)
+                {
+                    "ON"u8.CopyTo(span);
+                    return span[2..];
+                }
+                else
+                {
+                    "OFF"u8.CopyTo(span);
+                    return span[3..];
+                }
+
+            default:
+                throw new NotSupportedException($"Unsupported type {value.GetType().Name}");
+        }
+    }
 
 	public static Span<byte> Append(this Span<byte> span, char value)
 	{
@@ -233,7 +235,7 @@ public static class SpanExtensions
 		Span<char> chars = stackalloc char[30];
 		if (data.TryFormat(chars, out int written, format: null, provider: CultureInfo.InvariantCulture))
 		{
-			for (int i = 0; i < written; i++)
+            for (int i = 0; i < written; i++)
 			{
 				span[i] = (byte)chars[i];
 			}
