@@ -1,0 +1,4 @@
+#!/bin/sh
+
+systemctl stop p1monitor.service
+systemctl disable p1monitor.service
